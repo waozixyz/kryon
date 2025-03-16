@@ -1,0 +1,6 @@
+text {
+    position: 10, 10
+    size: 100, 20
+    textContent: "Hello World"
+    layout: absolute
+}
