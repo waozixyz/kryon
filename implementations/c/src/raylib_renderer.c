@@ -2,10 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include "krb.h"
+#include "raylib.h"
 
 typedef struct {
     KrbElementHeader header;
     char* text;
+    Color bg_color;
 } KrbElement;
 
 void dump_bytes(const void* data, size_t size) {
@@ -52,6 +54,7 @@ int main(int argc, char* argv[]) {
     KrbElement* elements = calloc(doc.header.element_count, sizeof(KrbElement));
     for (int i = 0; i < doc.header.element_count; i++) {
         elements[i].header = doc.elements[i];
+        elements[i].bg_color = WHITE; // Default background
         for (int j = 0; j < doc.elements[i].property_count; j++) {
             KrbProperty* prop = &doc.properties[i][j];
             if (prop->property_id == 0x08 && prop->value_type == 0x04 && prop->size == 1 && doc.strings) {
@@ -61,21 +64,43 @@ int main(int argc, char* argv[]) {
                     printf("DEBUG: Element text: '%s'\n", elements[i].text);
                 }
             }
+            else if (prop->property_id == 0x01 && prop->value_type == 0x03 && prop->size == 4) {
+                // BackgroundColor (RGBA)
+                unsigned char* color = (unsigned char*)prop->value;
+                elements[i].bg_color = (Color){color[0], color[1], color[2], color[3]};
+            }
         }
     }
 
-    // Render
-    printf("\033[2J\033[H"); // Clear screen
-    for (int i = 0; i < doc.header.element_count; i++) {
-        if (elements[i].text) {
-            int rows = elements[i].header.pos_y / 16 + 1;
-            int cols = elements[i].header.pos_x / 8 + 1;
-            printf("\033[%d;%dH%s", rows, cols, elements[i].text);
+    // Initialize Raylib
+    InitWindow(800, 600, "KRB Raylib Renderer");
+    SetTargetFPS(60);
+
+    // Main render loop
+    while (!WindowShouldClose()) {
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        // Render elements
+        for (int i = 0; i < doc.header.element_count; i++) {
+            KrbElement* el = &elements[i];
+            Rectangle rect = {
+                el->header.pos_x,
+                el->header.pos_y,
+                el->header.width,
+                el->header.height
+            };
+            DrawRectangleRec(rect, el->bg_color);
+            if (el->text) {
+                DrawText(el->text, el->header.pos_x + 5, el->header.pos_y + 5, 20, BLACK);
+            }
         }
+
+        EndDrawing();
     }
-    printf("\033[25;1H\n");
 
     // Cleanup
+    CloseWindow();
     for (int i = 0; i < doc.header.element_count; i++) {
         if (elements[i].text) free(elements[i].text);
     }

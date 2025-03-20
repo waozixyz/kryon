@@ -37,43 +37,37 @@ The Kryon workflow typically involves:
 [Animation Table]      # Transitions and keyframe animations (optional)
 [String Table]         # Text content and identifiers
 [Resource Table]       # External resources like images (optional)
-## 1. File Header (32 or 34 bytes)
 
-The File Header size is 32 bytes in Small File Mode or 34 bytes in Large File Mode, as determined by Flags Bit 6.
+## 1. File Header (38 bytes)
 
-| Offset | Size | Field | Description | Example (Small) | Example (Large) |
-|--------|------|-------|-------------|----------------|-----------------|
-| 0      | 4    | Magic Number   | Format identifier         | `0x4B 0x52 0x42 0x31` ("KRB1") | `0x4B 0x52 0x42 0x31` ("KRB1") |
-| 4      | 2    | Version        | Format version            | `0x01 0x00` (1.0)             | `0x01 0x00` (1.0)             |
-| 6      | 2    | Flags          | Format capabilities       | `0x07 0x00` (styles, animations, resources) | `0x47 0x00` (styles, animations, resources, large file) |
-| 8      | 2    | Element Count  | Number of elements        | `0x05 0x00` (5 elements)      | `0x05 0x00` (5 elements)      |
-| 10     | 2    | Style Count    | Number of styles          | `0x02 0x00` (2 styles)        | `0x02 0x00` (2 styles)        |
-| 12     | 2    | Animation Count| Number of animations      | `0x03 0x00` (3 animations)    | `0x03 0x00` (3 animations)    |
-| 14     | 2    | String Count   | Number of strings         | `0x0A 0x00` (10 strings)      | `0x0A 0x00` (10 strings)      |
-| 16     | 2    | Resource Count | Number of resources       | `0x01 0x00` (1 resource)      | `0x01 0x00` (1 resource)      |
-| 18     | 4    | Element Offset | Byte offset to elements   | `0x20 0x00 0x00 0x00` (32)    | `0x22 0x00 0x00 0x00` (34)    |
-| 22     | 4    | Style Offset   | Byte offset to styles     | `0xC8 0x00 0x00 0x00` (200)   | `0xCA 0x00 0x00 0x00` (202)   |
-| 26     | 4    | Animation Offset | Byte offset to animations | `0xFA 0x00 0x00 0x00` (250) | `0xFC 0x00 0x00 0x00` (252) |
-| 30     | 4    | String Offset  | Byte offset to strings    | `0x40 0x01 0x00 0x00` (320)   | `0x42 0x01 0x00 0x00` (322)   |
-| 34     | 4    | Resource Offset| Byte offset to resources  | `0x80 0x01 0x00 0x00` (384)   | `0x82 0x01 0x00 0x00` (386)   |
-| 38     | 2 or 4 | Total Size   | File size in bytes        | `0xB4 0x01` (436)             | `0xB4 0x01 0x00 0x00` (436)   |
+| Offset | Size | Field | Description | Example |
+|--------|------|-------|-------------|---------|
+| 0      | 4    | Magic Number   | Format identifier         | `0x4B 0x52 0x42 0x31` ("KRB1") |
+| 4      | 2    | Version        | Format version            | `0x01 0x00` (1.0) |
+| 6      | 2    | Flags          | Format capabilities       | `0x07 0x00` (styles, animations, resources) |
+| 8      | 2    | Element Count  | Number of elements        | `0x05 0x00` (5 elements) |
+| 10     | 2    | Style Count    | Number of styles          | `0x02 0x00` (2 styles) |
+| 12     | 2    | Animation Count| Number of animations      | `0x03 0x00` (3 animations) |
+| 14     | 2    | String Count   | Number of strings         | `0x0A 0x00` (10 strings) |
+| 16     | 2    | Resource Count | Number of resources       | `0x01 0x00` (1 resource) |
+| 18     | 4    | Element Offset | Byte offset to elements   | `0x26 0x00 0x00 0x00` (38) |
+| 22     | 4    | Style Offset   | Byte offset to styles     | `0xC8 0x00 0x00 0x00` (200) |
+| 26     | 4    | Animation Offset | Byte offset to animations | `0xFA 0x00 0x00 0x00` (250) |
+| 30     | 4    | String Offset  | Byte offset to strings    | `0x40 0x01 0x00 0x00` (320) |
+| 34     | 4    | Total Size     | File size in bytes        | `0xB4 0x01 0x00 0x00` (436) |
 
 - **Endianness**: Little-endian for multi-byte values
-- **Notes**:
-  - If Flags Bit 6 = 0 (Small File Mode), Total Size is 2 bytes, header is 32 bytes, and offsets start at 32.
-  - If Flags Bit 6 = 1 (Large File Mode), Total Size is 4 bytes, header is 34 bytes, and offsets start at 34.
-
 
 - **Flags**:
-  - Bit 0: Has styles
-  - Bit 1: Has animations
-  - Bit 2: Has resources
-  - Bit 3: Compressed (string table uses dictionary compression)
-  - Bit 4: Fixed-point (uses 8.8 fixed-point for percentages)
-  - Bit 5: Extended color (uses RGB8 instead of palette indices)
-  - Bit 6: Large File (0 = 2-byte Total Size, 1 = 4-byte Total Size)
-  - Bit 7-15: Reserved
-
+ - Bit 0: Has styles
+ - Bit 1: Has animations
+ - Bit 2: Has resources
+ - Bit 3: Compressed (string table uses dictionary compression)
+ - Bit 4: Fixed-point (uses 8.8 fixed-point for percentages)
+ - Bit 5: Extended color (uses RGB8 instead of palette indices)
+ - Bit 6: Reserved
+ - Bit 7-15: Reserved
+ 
 ## 2. Element Blocks
 
 Each element represents a UI component with hierarchical structure.

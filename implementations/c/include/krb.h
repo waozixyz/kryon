@@ -19,7 +19,7 @@ typedef struct {
     uint32_t animation_offset;
     uint32_t string_offset;
     uint32_t resource_offset;
-    uint16_t total_size;
+    uint32_t total_size; 
 } KrbHeader;
 
 typedef struct {
@@ -44,10 +44,19 @@ typedef struct {
     void* value;
 } KrbProperty;
 
+typedef struct {
+    KrbHeader header;
+    char** strings;
+    KrbElementHeader* elements;
+    KrbProperty** properties; 
+} KrbDocument;
+
 #pragma pack(pop)
 
 int read_header(FILE* file, KrbHeader* header);
 void read_element_header(FILE* file, KrbElementHeader* element);
 void read_property(FILE* file, KrbProperty* prop);
+int krb_read_document(FILE* file, KrbDocument* doc); // New function
+void krb_free_document(KrbDocument* doc); // Cleanup function
 
 #endif
