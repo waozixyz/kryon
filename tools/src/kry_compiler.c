@@ -21,7 +21,7 @@ typedef struct {
     uint8_t child_count;
     uint8_t event_count;
     uint8_t animation_count;
-    uint16_t child_offset; // Added for child offset in .krb
+    uint16_t child_offset;
 } KrbElementHeader;
 
 typedef struct {
@@ -110,6 +110,9 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
             current_style = &styles[style_count++];
             current_style->name = strdup(style_name);
             current_style->id = style_count;
+            strings[string_count].text = strdup(style_name);
+            strings[string_count].index = string_count;
+            string_count++;
             indent_level = indent;
         }
         else if (current_style && indent > indent_level && strncmp(trimmed, "}", 1) != 0) {
@@ -206,43 +209,47 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         }
     }
 
-    // Calculate child offsets
+    // Calculate offsets and total size
     uint32_t current_offset = 38; // After header
     for (int i = 0; i < element_count; i++) {
-        elements[i].header.child_offset = 0;
-        if (elements[i].header.child_count > 0) {
-            current_offset += 16 + elements[i].header.property_count * (3 + elements[i].properties->size);
-            elements[i].header.child_offset = current_offset - 38; // Relative to start of elements
+        // Element header (18 bytes: 16 + 2 for child_offset)
+        current_offset += 18;
+        // Properties (3 bytes header + value size per property)
+        for (int j = 0; j < elements[i].header.property_count; j++) {
+            current_offset += 3 + elements[i].properties[j].size;
         }
-        current_offset += 16 + elements[i].header.property_count * (3 + elements[i].properties->size);
+        // Set child offset if applicable
+        elements[i].header.child_offset = (elements[i].header.child_count > 0) ? current_offset - 38 : 0;
+    }
+    uint32_t style_offset = current_offset;
+    for (int i = 0; i < style_count; i++) {
+        // Style header (3 bytes: id, name_index, property_count)
+        current_offset += 3;
+        // Style properties
+        for (int j = 0; j < styles[i].property_count; j++) {
+            current_offset += 3 + styles[i].properties[j].size;
+        }
+    }
+    uint32_t string_offset = current_offset;
+    uint32_t total_size = string_offset + 2; // String table count
+    for (int i = 0; i < string_count; i++) {
+        total_size += 1 + strlen(strings[i].text); // Length byte + string data
     }
 
     // Write Header
     fwrite("KRB1", 1, 4, out);
-    write_u16(out, 0x0001);
-    write_u16(out, style_count > 0 ? 0x0001 : 0x0000); // Flags: has styles if any
+    write_u16(out, 0x0001); // Version
+    write_u16(out, style_count > 0 ? 0x0001 : 0x0000); // Flags: has styles
     write_u16(out, element_count);
     write_u16(out, style_count);
-    write_u16(out, 0);
+    write_u16(out, 0); // Animation count
     write_u16(out, string_count);
-    write_u16(out, 0);
+    write_u16(out, 0); // Resource count
     uint32_t element_offset = 38;
     write_u32(out, element_offset);
-    uint32_t style_offset = element_offset;
-    for (int i = 0; i < element_count; i++) {
-        style_offset += 16 + elements[i].header.property_count * (3 + elements[i].properties->size);
-    }
     write_u32(out, style_count > 0 ? style_offset : 0);
-    write_u32(out, 0);
-    uint32_t string_offset = style_offset;
-    for (int i = 0; i < style_count; i++) {
-        string_offset += 3 + styles[i].property_count * (3 + styles[i].properties->size);
-    }
+    write_u32(out, 0); // Animation offset
     write_u32(out, string_offset);
-    uint32_t total_size = string_offset + 2;
-    for (int i = 0; i < string_count; i++) {
-        total_size += 1 + strlen(strings[i].text);
-    }
     write_u32(out, total_size);
 
     // Write Elements
@@ -273,7 +280,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
     for (int i = 0; i < style_count; i++) {
         StyleEntry* st = &styles[i];
         fputc(st->id, out);
-        fputc(st->name ? st->id - 1 : 0, out); // String index (assuming style names are in order)
+        fputc(i, out); // String index for style name
         fputc(st->property_count, out);
         for (int j = 0; j < st->property_count; j++) {
             fputc(st->properties[j].property_id, out);

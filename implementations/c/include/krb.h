@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define MAX_ELEMENTS 256
+
 #pragma pack(push, 1)
 
 typedef struct {

@@ -7,6 +7,12 @@ A binary UI format with multi-language implementations.
 - `implementations/`: Language-specific readers and renderers
 - `tools/`: Utilities (e.g., kry to krb compiler)
 
+## Development Setup
+
+This project uses VS Code with the following settings:
+- `.kry` files are treated as QML for syntax highlighting (see `.vscode/settings.json`).
+- Install the "QML" extension (`bbenoist.qml`) in VS Code for the best experience.
+
 ## Build and Run
 ### Compiler
 gcc -o kry_compiler tools/src/kry_compiler.c

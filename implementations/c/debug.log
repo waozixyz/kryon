@@ -1,0 +1,13 @@
+DEBUG: File size: 115 bytes
+DEBUG: Full file content:
+4B 52 42 31 01 00 01 00 02 00 01 00 00 00 02 00 
+00 00 26 00 00 00 4E 00 00 00 00 00 00 00 5C 00 
+00 00 73 00 00 00 01 00 C8 00 64 00 C8 00 64 00 
+00 00 00 01 00 00 12 00 02 00 0A 00 0A 00 B4 00 
+50 00 00 00 01 00 00 00 00 00 08 04 01 01 01 00 
+02 04 01 01 02 01 03 04 AA FF FF FF 02 00 06 73 
+74 79 6C 65 31 0D 22 48 65 6C 6C 6F 20 57 6F 72 
+6C 64 22 
+DEBUG: Terminal size: 24x80
+DEBUG: Rendering element type=1 at (200, 100) -> terminal (4, 20), size=20x4
+DEBUG: Rendering element type=18 at (202, 110) -> terminal (4, 20), size=1x7

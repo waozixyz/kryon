@@ -1,6 +1,6 @@
 style "style1" {
     border_width: 2
-    background_color: #FFFFFFFF
+    background_color: #AAFFFFFF
 }
 
 Container {

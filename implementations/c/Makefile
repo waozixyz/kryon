@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -g -Iinclude
 LDFLAGS_SDL = -lSDL2 -lSDL2_ttf
 LDFLAGS_RAYLIB = -lraylib -lm
-LDFLAGS_TERM = # No extra libs for terminal
+LDFLAGS_TERM = -ltermbox
 
 # Directories
 SRC_DIR = src
