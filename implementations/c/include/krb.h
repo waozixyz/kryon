@@ -8,9 +8,11 @@
 #pragma pack(push, 1)
 
 typedef struct {
-    char magic[4];
-    uint16_t version;
-    uint16_t flags;
+    char magic[4];           // "KRB1"
+    uint16_t version;        // 0x0001 for v1.0
+    uint16_t flags;          // Bit 0: Has styles, Bit 1: Has animations, Bit 2: Has resources, 
+                             // Bit 3: Compressed, Bit 4: Fixed-point, Bit 5: Extended color, 
+                             // Bit 6: Has App element, Bit 7-15: Reserved
     uint16_t element_count;
     uint16_t style_count;
     uint16_t animation_count;
@@ -20,19 +22,18 @@ typedef struct {
     uint32_t style_offset;
     uint32_t animation_offset;
     uint32_t string_offset;
-    uint32_t resource_offset;
     uint32_t total_size; 
 } KrbHeader;
 
 typedef struct {
-    uint8_t type;
-    uint8_t id;
+    uint8_t type;            // Element type (e.g., 0x00=App, 0x01=Container, 0x02=Text, 0x30=Video)
+    uint8_t id;              // String table index or 0
     uint16_t pos_x;
     uint16_t pos_y;
     uint16_t width;
     uint16_t height;
-    uint8_t layout;
-    uint8_t style_id;
+    uint8_t layout;          // Layout properties bitfield
+    uint8_t style_id;        // Style reference or 0; for App, cascades to children unless overridden
     uint8_t property_count;
     uint8_t child_count;
     uint8_t event_count;
@@ -40,25 +41,25 @@ typedef struct {
 } KrbElementHeader;
 
 typedef struct {
-    uint8_t property_id;
-    uint8_t value_type;
-    uint8_t size;
-    void* value;
+    uint8_t property_id;     // e.g., 0x01=BackgroundColor, 0x20=WindowWidth
+    uint8_t value_type;      // e.g., 0x01=Byte, 0x02=Short, 0x03=Color, 0x04=String, 0x06=Percentage
+    uint8_t size;            // Size of value in bytes
+    void* value;             // Pointer to value data
 } KrbProperty;
 
 typedef struct {
-    uint8_t id;
-    uint8_t name_index;
+    uint8_t id;              // Style identifier
+    uint8_t name_index;      // String table index for style name
     uint8_t property_count;
-    KrbProperty* properties;
+    KrbProperty* properties; // Array of properties
 } KrbStyle;
 
 typedef struct {
     KrbHeader header;
-    KrbElementHeader* elements;
-    KrbProperty** properties;
-    KrbStyle* styles;
-    char** strings;
+    KrbElementHeader* elements;  // Array of element headers
+    KrbProperty** properties;    // Array of property arrays, indexed by element
+    KrbStyle* styles;            // Array of styles
+    char** strings;              // Array of string pointers
 } KrbDocument;
 
 #pragma pack(pop)

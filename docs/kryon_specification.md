@@ -32,11 +32,11 @@ The Kryon workflow typically involves:
 ## File Structure
 
 [File Header]          # Format identification and section offsets
-[Element Blocks]       # UI components with properties and hierarchy
+[Element Blocks]       # Starts with App (if present), followed by other elements
 [Style Blocks]         # Reusable styles (optional)
 [Animation Table]      # Transitions and keyframe animations (optional)
-[String Table]         # Text content and identifiers
-[Resource Table]       # External resources like images (optional)
+[String Table]         # Text content and identifiers, includes window title
+[Resource Table]       # External resources like images and videos (optional)
 
 ## 1. File Header (38 bytes)
 
@@ -44,7 +44,7 @@ The Kryon workflow typically involves:
 |--------|------|-------|-------------|---------|
 | 0      | 4    | Magic Number   | Format identifier         | `0x4B 0x52 0x42 0x31` ("KRB1") |
 | 4      | 2    | Version        | Format version            | `0x01 0x00` (1.0) |
-| 6      | 2    | Flags          | Format capabilities       | `0x07 0x00` (styles, animations, resources) |
+| 6      | 2    | Flags          | Format capabilities       | `0x47 0x00` (styles, animations, resources, app) |
 | 8      | 2    | Element Count  | Number of elements        | `0x05 0x00` (5 elements) |
 | 10     | 2    | Style Count    | Number of styles          | `0x02 0x00` (2 styles) |
 | 12     | 2    | Animation Count| Number of animations      | `0x03 0x00` (3 animations) |
@@ -59,48 +59,61 @@ The Kryon workflow typically involves:
 - **Endianness**: Little-endian for multi-byte values
 
 - **Flags**:
- - Bit 0: Has styles
- - Bit 1: Has animations
- - Bit 2: Has resources
- - Bit 3: Compressed (string table uses dictionary compression)
- - Bit 4: Fixed-point (uses 8.8 fixed-point for percentages)
- - Bit 5: Extended color (uses RGB8 instead of palette indices)
- - Bit 6: Reserved
- - Bit 7-15: Reserved
+  - Bit 0: Has styles
+  - Bit 1: Has animations
+  - Bit 2: Has resources
+  - Bit 3: Compressed (string table uses dictionary compression)
+  - Bit 4: Fixed-point (uses 8.8 fixed-point for percentages)
+  - Bit 5: Extended color (uses RGB8 instead of palette indices)
+  - Bit 6: Has App element (indicates presence of App element)
+  - Bit 7-15: Reserved
  
 ## 2. Element Blocks
 
-Each element represents a UI component with hierarchical structure.
+Each element represents a UI component with hierarchical structure. The first element may be an `App` element if the Has App flag is set.
 
 ### Element Header (16 bytes)
 
 | Offset | Size | Field | Description | Example |
 |--------|------|-------|-------------|---------|
-| 0 | 1 | Type | Element type | `0x01` (Container) |
-| 1 | 1 | ID | String table index or 0 | `0x01` ("mainView") |
-| 2 | 2 | Position X | X coordinate or offset | `0x0A 0x00` (10) |
-| 4 | 2 | Position Y | Y coordinate or offset | `0x14 0x00` (20) |
-| 6 | 2 | Width | Width in pixels or logical units | `0xC8 0x00` (200) |
-| 8 | 2 | Height | Height in pixels or logical units | `0x64 0x00` (100) |
-| 10 | 1 | Layout | Layout properties | `0x03` (Row, Wrap) |
+| 0 | 1 | Type | Element type | `0x00` (App) or `0x01` (Container) |
+| 1 | 1 | ID | String table index or 0 | `0x01` ("mainApp") |
+| 2 | 2 | Position X | X coordinate or offset | `0x00 0x00` (0) |
+| 4 | 2 | Position Y | Y coordinate or offset | `0x00 0x00` (0) |
+| 6 | 2 | Width | Width in pixels or logical units | `0x20 0x03` (800) |
+| 8 | 2 | Height | Height in pixels or logical units | `0x58 0x02` (600) |
+| 10 | 1 | Layout | Layout properties | `0x00` (Default) |
 | 11 | 1 | Style ID | Style reference or 0 | `0x01` (Style #1) |
-| 12 | 1 | Property Count | Number of properties | `0x05` (5 properties) |
-| 13 | 1 | Child Count | Number of children | `0x02` (2 children) |
-| 14 | 1 | Event Count | Number of events | `0x01` (1 event) |
-| 15 | 1 | Animation Count | Number of animations | `0x01` (1 animation) |
+| 12 | 1 | Property Count | Number of properties | `0x06` (6 properties) |
+| 13 | 1 | Child Count | Number of children | `0x01` (1 child) |
+| 14 | 1 | Event Count | Number of events | `0x00` (0 events) |
+| 15 | 1 | Animation Count | Number of animations | `0x00` (0 animations) |
+
+- **Style ID**: For `App`, this applies a style to the application window (e.g., background color) and serves as the default style for all child elements unless they specify their own `Style ID`.
 
 **Element Types**:
-- `0x00`: None/Empty
-- `0x01`: Container (div)
-- `0x02`: Text (span/p)
-- `0x03`: Button
-- `0x04`: Image
-- `0x05`: Input
-- `0x06`: List
-- `0x07`: Grid
-- `0x08`: Canvas
-- `0x09`: Scrollable
-- `0x0A`-`0xFF`: Custom (defined by name in the string table)
+- **Core Elements** (0x00–0x0F):
+  - `0x00`: App (application root element)
+  - `0x01`: Container (div-like, generic container)
+  - `0x02`: Text (span/p-like, text content)
+  - `0x03`: Image (image display)
+  - `0x04`: Canvas (raw drawing surface)
+  - `0x05`–`0x0F`: Reserved for future core elements
+
+- **Interactive Elements** (0x10–0x1F):
+  - `0x10`: Button (clickable element)
+  - `0x11`: Input (text input field)
+  - `0x12`–`0x1F`: Reserved for future interactive elements (e.g., Checkbox, Slider)
+
+- **Structural Elements** (0x20–0x2F):
+  - `0x20`: List (vertical/horizontal list)
+  - `0x21`: Grid (table-like layout)
+  - `0x22`: Scrollable (scrollable container)
+  - `0x23`–`0x2F`: Reserved for future structural elements (e.g., Stack, TabView)
+
+- **Specialized Elements** (0x30–0xFF):
+  - `0x30`: Video (video playback element)
+  - `0x31`–`0xFF`: Custom (defined by name in the string table, e.g., platform-specific or user-defined components)
 
 **Layout Byte**:
 - Bits 0-1: Direction (00=Row, 01=Column, 10=RowReverse, 11=ColumnReverse)
@@ -151,7 +164,17 @@ Properties follow the element header, with `Property Count` entries:
 - `0x17`: Shadow
 - `0x18`: Overflow
 - `0x19`: Custom (uses a string table reference)
-- `0x1A`-`0xFF`: Reserved
+- **App-Specific Properties**:
+  - `0x20`: WindowWidth (Short, 2 bytes)
+  - `0x21`: WindowHeight (Short, 2 bytes)
+  - `0x22`: WindowTitle (String index, 1 byte)
+  - `0x23`: Resizable (Byte, 1 byte: 0=false, 1=true)
+  - `0x24`: KeepAspect (Byte, 1 byte: 0=false, 1=true)
+  - `0x25`: ScaleFactor (Percentage, 2 bytes fixed-point 8.8)
+  - `0x26`: Icon (Resource index, 1 byte)
+  - `0x27`: Version (String index, 1 byte)
+  - `0x28`: Author (String index, 1 byte)
+- `0x29`-`0xFF`: Reserved
 
 **Value Types**:
 - `0x00`: None
@@ -216,6 +239,12 @@ Child references follow animation references, with `Child Count` entries:
 | Offset | Size | Field | Description | Example |
 |--------|------|-------|-------------|---------|
 | 0      | 2    | Child Offset | Byte offset from the start of this element to the child element | `0x10 0x00` (16 bytes ahead) |
+
+## Notes on App Element
+- The `App` element, if present (Flag Bit 6 = 1), must be the first element in the Element Blocks section.
+- It defines application-wide properties such as window dimensions, title, scaling, and metadata (icon, version, author).
+- The `Style ID` field (offset 11) applies a style directly to the `App` element (e.g., window background) and cascades to all child elements as their default style unless they specify their own `Style ID`.
+- Renderers should use these properties to initialize the application window and apply the cascading style hierarchy.
 
 ## 3. Style Blocks
 

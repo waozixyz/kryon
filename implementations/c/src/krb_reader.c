@@ -28,6 +28,10 @@ int read_header(FILE* file, KrbHeader* header) {
     header->total_size = (uint32_t)(buffer[34] | (buffer[35] << 8) | (buffer[36] << 16) | (buffer[37] << 24));
     
     if (memcmp(header->magic, "KRB1", 4) != 0 || header->version != 0x0001) return 0;
+
+    // Optional: Validate that if Bit 6 is set, the first element is App (type 0x00)
+    // We'll check this after reading elements to keep this function simple
+
     return 1;
 }
 
@@ -58,10 +62,33 @@ void read_property(FILE* file, KrbProperty* prop) {
     if (prop->size > 0) {
         prop->value = malloc(prop->size);
         fread(prop->value, 1, prop->size, file);
-        // For colors (RGBA), ensure correct byte order
-        if (prop->value_type == 0x03 && prop->size == 4) {
-            uint8_t* bytes = (uint8_t*)prop->value;
-            *(uint32_t*)prop->value = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+
+        // Adjust byte order based on value_type
+        switch (prop->value_type) {
+            case 0x02: // Short (16-bit)
+                if (prop->size == 2) {
+                    uint8_t* bytes = (uint8_t*)prop->value;
+                    *(uint16_t*)prop->value = (uint16_t)(bytes[0] | (bytes[1] << 8));
+                }
+                break;
+            case 0x03: // Color (RGBA)
+                if (prop->size == 4) {
+                    uint8_t* bytes = (uint8_t*)prop->value;
+                    *(uint32_t*)prop->value = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+                }
+                break;
+            case 0x06: // Percentage (8.8 fixed-point)
+                if (prop->size == 2) {
+                    uint8_t* bytes = (uint8_t*)prop->value;
+                    *(uint16_t*)prop->value = (uint16_t)(bytes[0] | (bytes[1] << 8));
+                }
+                break;
+            case 0x08: // EdgeInsets (4 bytes: top, right, bottom, left)
+                // No reordering needed, stored as-is
+                break;
+            default:
+                // Other types (e.g., Byte, String index, Resource index) don't need reordering
+                break;
         }
     } else {
         prop->value = NULL;
@@ -70,6 +97,18 @@ void read_property(FILE* file, KrbProperty* prop) {
 
 int krb_read_document(FILE* file, KrbDocument* doc) {
     if (!read_header(file, &doc->header)) return 0;
+
+    // Validate App element if Flag Bit 6 is set
+    if (doc->header.flags & 0x0040) {
+        fseek(file, doc->header.element_offset, SEEK_SET);
+        unsigned char first_type;
+        fread(&first_type, 1, 1, file);
+        if (first_type != 0x00) {
+            printf("Error: Flag indicates App element, but first element is not type 0x00\n");
+            return 0;
+        }
+        fseek(file, doc->header.element_offset, SEEK_SET); // Reset position
+    }
 
     if (doc->header.style_count > 0 && doc->header.style_offset >= 38) {
         doc->styles = calloc(doc->header.style_count, sizeof(KrbStyle));

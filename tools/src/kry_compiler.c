@@ -51,7 +51,7 @@ typedef struct Element {
 } Element;
 
 void write_u16(FILE* file, uint16_t value) {
-    fputc(value & 0xFF, file);
+    fputc(value & 0xFF, file); // Little-endian: low byte first
     fputc((value >> 8) & 0xFF, file);
 }
 
@@ -82,6 +82,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
     int element_count = 0;
     int string_count = 0;
     int style_count = 0;
+    int has_app = 0;
 
     char line[256];
     Element* current_element = NULL;
@@ -102,7 +103,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
             sscanf(trimmed, "style \"%63[^\"]\" {", style_name);
             current_style = &styles[style_count++];
             current_style->name = strdup(style_name);
-            current_style->id = style_count;
+            current_style->id = style_count; // 1-based ID
             strings[string_count].text = strdup(style_name);
             strings[string_count].index = string_count;
             string_count++;
@@ -129,7 +130,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
                         current_style->properties[current_style->property_count].size = 4;
                         current_style->properties[current_style->property_count].value = malloc(4);
                         uint8_t* color = current_style->properties[current_style->property_count].value;
-                        color[0] = r; color[1] = g; color[2] = b; color[3] = a;
+                        color[0] = r; color[1] = g; color[2] = b; color[3] = a; // RGBA order
                         current_style->property_count++;
                     }
                 }
@@ -165,7 +166,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
             current_style = NULL;
             indent_level = 0;
         }
-        else if (strncmp(trimmed, "Container {", 11) == 0 || strncmp(trimmed, "Text {", 6) == 0) {
+        else if (strncmp(trimmed, "App {", 5) == 0 || strncmp(trimmed, "Container {", 11) == 0 || strncmp(trimmed, "Text {", 6) == 0) {
             if (element_count >= MAX_ELEMENTS) {
                 printf("Error: Too many elements\n");
                 fclose(in);
@@ -173,7 +174,14 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
                 return 1;
             }
             current_element = &elements[element_count++];
-            current_element->header.type = (strncmp(trimmed, "Container", 9) == 0) ? 0x01 : 0x02;
+            if (strncmp(trimmed, "App", 3) == 0) {
+                current_element->header.type = 0x00; // App
+                has_app = 1;
+            } else if (strncmp(trimmed, "Container", 9) == 0) {
+                current_element->header.type = 0x01; // Container
+            } else {
+                current_element->header.type = 0x02; // Text
+            }
             current_element->header.id = 0;
             current_element->header.pos_x = 0;
             current_element->header.pos_y = 0;
@@ -226,8 +234,95 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
                     current_element->header.property_count++;
                     string_count++;
                 }
-                // New border properties for Containers
-                else if (current_element->header.type == 0x01) {
+                else if (current_element->header.type == 0x00) { // App-specific properties
+                    if (strcmp(key, "window_width") == 0) {
+                        current_element->properties[current_element->header.property_count].property_id = 0x20;
+                        current_element->properties[current_element->header.property_count].value_type = 0x02;
+                        current_element->properties[current_element->header.property_count].size = 2;
+                        current_element->properties[current_element->header.property_count].value = malloc(2);
+                        *(uint16_t*)current_element->properties[current_element->header.property_count].value = atoi(value);
+                        current_element->header.property_count++;
+                    }
+                    else if (strcmp(key, "window_height") == 0) {
+                        current_element->properties[current_element->header.property_count].property_id = 0x21;
+                        current_element->properties[current_element->header.property_count].value_type = 0x02;
+                        current_element->properties[current_element->header.property_count].size = 2;
+                        current_element->properties[current_element->header.property_count].value = malloc(2);
+                        *(uint16_t*)current_element->properties[current_element->header.property_count].value = atoi(value);
+                        current_element->header.property_count++;
+                    }
+                    else if (strcmp(key, "window_title") == 0) {
+                        strings[string_count].text = strdup(value);
+                        strings[string_count].index = string_count;
+                        current_element->properties[current_element->header.property_count].property_id = 0x22;
+                        current_element->properties[current_element->header.property_count].value_type = 0x04;
+                        current_element->properties[current_element->header.property_count].size = 1;
+                        current_element->properties[current_element->header.property_count].value = malloc(1);
+                        *(uint8_t*)current_element->properties[current_element->header.property_count].value = string_count;
+                        current_element->header.property_count++;
+                        string_count++;
+                    }
+                    else if (strcmp(key, "resizable") == 0) {
+                        current_element->properties[current_element->header.property_count].property_id = 0x23;
+                        current_element->properties[current_element->header.property_count].value_type = 0x01;
+                        current_element->properties[current_element->header.property_count].size = 1;
+                        current_element->properties[current_element->header.property_count].value = malloc(1);
+                        *(uint8_t*)current_element->properties[current_element->header.property_count].value = (strcmp(value, "true") == 0) ? 1 : 0;
+                        current_element->header.property_count++;
+                    }
+                    else if (strcmp(key, "keep_aspect") == 0) {
+                        current_element->properties[current_element->header.property_count].property_id = 0x24;
+                        current_element->properties[current_element->header.property_count].value_type = 0x01;
+                        current_element->properties[current_element->header.property_count].size = 1;
+                        current_element->properties[current_element->header.property_count].value = malloc(1);
+                        *(uint8_t*)current_element->properties[current_element->header.property_count].value = (strcmp(value, "true") == 0) ? 1 : 0;
+                        current_element->header.property_count++;
+                    }
+                    else if (strcmp(key, "scale_factor") == 0) {
+                        float scale = atof(value);
+                        uint16_t fixed_point = (uint16_t)(scale * 256); // 8.8 fixed-point
+                        current_element->properties[current_element->header.property_count].property_id = 0x25;
+                        current_element->properties[current_element->header.property_count].value_type = 0x06;
+                        current_element->properties[current_element->header.property_count].size = 2;
+                        current_element->properties[current_element->header.property_count].value = malloc(2);
+                        *(uint16_t*)current_element->properties[current_element->header.property_count].value = fixed_point;
+                        current_element->header.property_count++;
+                    }
+                    else if (strcmp(key, "icon") == 0) {
+                        strings[string_count].text = strdup(value);
+                        strings[string_count].index = string_count;
+                        current_element->properties[current_element->header.property_count].property_id = 0x26;
+                        current_element->properties[current_element->header.property_count].value_type = 0x05;
+                        current_element->properties[current_element->header.property_count].size = 1;
+                        current_element->properties[current_element->header.property_count].value = malloc(1);
+                        *(uint8_t*)current_element->properties[current_element->header.property_count].value = string_count;
+                        current_element->header.property_count++;
+                        string_count++;
+                    }
+                    else if (strcmp(key, "version") == 0) {
+                        strings[string_count].text = strdup(value);
+                        strings[string_count].index = string_count;
+                        current_element->properties[current_element->header.property_count].property_id = 0x27;
+                        current_element->properties[current_element->header.property_count].value_type = 0x04;
+                        current_element->properties[current_element->header.property_count].size = 1;
+                        current_element->properties[current_element->header.property_count].value = malloc(1);
+                        *(uint8_t*)current_element->properties[current_element->header.property_count].value = string_count;
+                        current_element->header.property_count++;
+                        string_count++;
+                    }
+                    else if (strcmp(key, "author") == 0) {
+                        strings[string_count].text = strdup(value);
+                        strings[string_count].index = string_count;
+                        current_element->properties[current_element->header.property_count].property_id = 0x28;
+                        current_element->properties[current_element->header.property_count].value_type = 0x04;
+                        current_element->properties[current_element->header.property_count].size = 1;
+                        current_element->properties[current_element->header.property_count].value = malloc(1);
+                        *(uint8_t*)current_element->properties[current_element->header.property_count].value = string_count;
+                        current_element->header.property_count++;
+                        string_count++;
+                    }
+                }
+                else if (current_element->header.type == 0x01) { // Container-specific properties
                     if (strcmp(key, "border_width") == 0) {
                         current_element->properties[current_element->header.property_count].property_id = 0x04;
                         current_element->properties[current_element->header.property_count].value_type = 0x01;
@@ -249,12 +344,11 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
                             current_element->header.property_count++;
                         }
                     }
-                    // Add per-side border widths as EdgeInsets (top, right, bottom, left)
                     else if (strcmp(key, "border_widths") == 0) {
                         uint8_t top, right, bottom, left;
                         if (sscanf(value, "%hhu %hhu %hhu %hhu", &top, &right, &bottom, &left) == 4) {
                             current_element->properties[current_element->header.property_count].property_id = 0x04;
-                            current_element->properties[current_element->header.property_count].value_type = 0x08; // EdgeInsets
+                            current_element->properties[current_element->header.property_count].value_type = 0x08;
                             current_element->properties[current_element->header.property_count].size = 4;
                             current_element->properties[current_element->header.property_count].value = malloc(4);
                             uint8_t* widths = current_element->properties[current_element->header.property_count].value;
@@ -267,7 +361,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         }
     }
 
-    // Calculate offsets and total size (unchanged)
+    // Calculate offsets and total size
     uint32_t current_offset = 38;
     for (int i = 0; i < element_count; i++) {
         current_offset += 16;
@@ -288,22 +382,23 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         total_size += 1 + strlen(strings[i].text);
     }
 
-    // Write Header (unchanged)
+    // Write Header
     fwrite("KRB1", 1, 4, out);
-    write_u16(out, 0x0001);
-    write_u16(out, style_count > 0 ? 0x0001 : 0x0000);
+    write_u16(out, 0x0001); // Version
+    uint16_t flags = (style_count > 0 ? 0x0001 : 0x0000) | (has_app ? 0x0040 : 0x0000);
+    write_u16(out, flags);
     write_u16(out, element_count);
     write_u16(out, style_count);
-    write_u16(out, 0);
+    write_u16(out, 0); // Animation Count
     write_u16(out, string_count);
-    write_u16(out, 0);
-    write_u32(out, 38);
-    write_u32(out, style_count > 0 ? style_offset : 0);
-    write_u32(out, 0);
-    write_u32(out, string_offset);
+    write_u16(out, 0); // Resource Count
+    write_u32(out, 38); // Element Offset
+    write_u32(out, style_count > 0 ? style_offset : 0); // Style Offset
+    write_u32(out, 0); // Animation Offset
+    write_u32(out, string_offset); // String Offset
     write_u32(out, total_size);
 
-    // Write Elements (unchanged)
+    // Write Elements
     for (int i = 0; i < element_count; i++) {
         Element* el = &elements[i];
         fputc(el->header.type, out);
@@ -326,11 +421,11 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         }
     }
 
-    // Write Styles (unchanged)
+    // Write Styles
     for (int i = 0; i < style_count; i++) {
         StyleEntry* st = &styles[i];
         fputc(st->id, out);
-        fputc(i, out);
+        fputc(i, out); // Name Index (matches string table index)
         fputc(st->property_count, out);
         for (int j = 0; j < st->property_count; j++) {
             fputc(st->properties[j].property_id, out);
@@ -340,7 +435,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         }
     }
 
-    // Write String Table (unchanged)
+    // Write String Table
     write_u16(out, string_count);
     for (int i = 0; i < string_count; i++) {
         size_t len = strlen(strings[i].text);
@@ -348,7 +443,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         fwrite(strings[i].text, 1, len, out);
     }
 
-    // Cleanup (unchanged)
+    // Cleanup
     for (int i = 0; i < element_count; i++) {
         for (int j = 0; j < elements[i].header.property_count; j++) {
             free(elements[i].properties[j].value);
