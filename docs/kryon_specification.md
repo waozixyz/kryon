@@ -121,6 +121,9 @@ Properties follow the element header, with `Property Count` entries:
 | 2 | 1 | Size | Value size in bytes | `0x04` (4 bytes) |
 | 3 | Variable | Value | Property value | `0xFF 0x00 0x00 0xFF` (Red) |
 
+- If BorderWidth uses Value Type 0x08 (EdgeInsets), it defines individual border widths for each side (top, right, bottom, left) in that order, 4 bytes total.
+- Renderer should use EdgeInsets if present; otherwise, fall back to uniform BorderWidth (0x01 Byte).
+
 **Property IDs**:
 - `0x00`: Invalid
 - `0x01`: BackgroundColor

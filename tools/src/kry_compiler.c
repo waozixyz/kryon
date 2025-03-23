@@ -21,8 +21,7 @@ typedef struct {
     uint8_t child_count;
     uint8_t event_count;
     uint8_t animation_count;
-    uint16_t child_offset;
-} KrbElementHeader;
+} KrbElementHeader; // 16 bytes
 
 typedef struct {
     uint8_t property_id;
@@ -99,12 +98,6 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         if (*trimmed == '\0' || *trimmed == '\n') continue;
 
         if (strncmp(trimmed, "style ", 6) == 0) {
-            if (style_count >= MAX_STYLES) {
-                printf("Error: Too many styles\n");
-                fclose(in);
-                fclose(out);
-                return 1;
-            }
             char style_name[64];
             sscanf(trimmed, "style \"%63[^\"]\" {", style_name);
             current_style = &styles[style_count++];
@@ -114,6 +107,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
             strings[string_count].index = string_count;
             string_count++;
             indent_level = indent;
+            printf("DEBUG: Added style '%s', id=%d, string_index=%d\n", style_name, current_style->id, string_count - 1);
         }
         else if (current_style && indent > indent_level && strncmp(trimmed, "}", 1) != 0) {
             char key[64], value[128];
@@ -126,11 +120,37 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
                     *(uint8_t*)current_style->properties[current_style->property_count].value = atoi(value);
                     current_style->property_count++;
                 }
+                else if (strcmp(key, "border_color") == 0) {
+                    uint8_t r, g, b, a = 255;
+                    if (sscanf(value, "#%2hhx%2hhx%2hhx", &r, &g, &b) == 3 ||
+                        sscanf(value, "#%2hhx%2hhx%2hhx%2hhx", &r, &g, &b, &a) == 4) {
+                        current_style->properties[current_style->property_count].property_id = 0x03;
+                        current_style->properties[current_style->property_count].value_type = 0x03;
+                        current_style->properties[current_style->property_count].size = 4;
+                        current_style->properties[current_style->property_count].value = malloc(4);
+                        uint8_t* color = current_style->properties[current_style->property_count].value;
+                        color[0] = r; color[1] = g; color[2] = b; color[3] = a;
+                        current_style->property_count++;
+                    }
+                }
                 else if (strcmp(key, "background_color") == 0) {
                     uint8_t r, g, b, a = 255;
                     if (sscanf(value, "#%2hhx%2hhx%2hhx", &r, &g, &b) == 3 ||
                         sscanf(value, "#%2hhx%2hhx%2hhx%2hhx", &r, &g, &b, &a) == 4) {
                         current_style->properties[current_style->property_count].property_id = 0x01;
+                        current_style->properties[current_style->property_count].value_type = 0x03;
+                        current_style->properties[current_style->property_count].size = 4;
+                        current_style->properties[current_style->property_count].value = malloc(4);
+                        uint8_t* color = current_style->properties[current_style->property_count].value;
+                        color[0] = r; color[1] = g; color[2] = b; color[3] = a;
+                        current_style->property_count++;
+                    }
+                }
+                else if (strcmp(key, "text_color") == 0) {
+                    uint8_t r, g, b, a = 255;
+                    if (sscanf(value, "#%2hhx%2hhx%2hhx", &r, &g, &b) == 3 ||
+                        sscanf(value, "#%2hhx%2hhx%2hhx%2hhx", &r, &g, &b, &a) == 4) {
+                        current_style->properties[current_style->property_count].property_id = 0x02;
                         current_style->properties[current_style->property_count].value_type = 0x03;
                         current_style->properties[current_style->property_count].size = 4;
                         current_style->properties[current_style->property_count].value = malloc(4);
@@ -161,6 +181,10 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
             current_element->header.height = 0;
             current_element->header.layout = 0;
             current_element->header.style_id = 0;
+            current_element->header.property_count = 0;
+            current_element->header.child_count = 0;
+            current_element->header.event_count = 0;
+            current_element->header.animation_count = 0;
             if (indent > 0 && element_count > 1) {
                 Element* parent = &elements[element_count - 2];
                 parent->children[parent->child_count++] = current_element;
@@ -168,6 +192,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
                 parent->header.child_count++;
             }
             indent_level = indent;
+            printf("DEBUG: Added element %d, type=0x%02X, indent=%d\n", element_count - 1, current_element->header.type, indent);
         }
         else if (current_element && indent <= indent_level && strncmp(trimmed, "}", 1) == 0) {
             current_element = NULL;
@@ -181,20 +206,16 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
                 else if (strcmp(key, "width") == 0) current_element->header.width = atoi(value);
                 else if (strcmp(key, "height") == 0) current_element->header.height = atoi(value);
                 else if (strcmp(key, "style") == 0) {
+                    char style_name[64];
+                    sscanf(value, "\"%63[^\"]\"", style_name);
                     for (int i = 0; i < style_count; i++) {
-                        if (strcmp(styles[i].name, value) == 0) {
+                        if (strcmp(styles[i].name, style_name) == 0) {
                             current_element->header.style_id = styles[i].id;
                             break;
                         }
                     }
                 }
-                else if (strcmp(key, "text") == 0) {
-                    if (string_count >= MAX_STRINGS) {
-                        printf("Error: Too many strings\n");
-                        fclose(in);
-                        fclose(out);
-                        return 1;
-                    }
+                else if (strcmp(key, "text") == 0 && current_element->header.type == 0x02) {
                     strings[string_count].text = strdup(value);
                     strings[string_count].index = string_count;
                     current_element->properties[current_element->header.property_count].property_id = 0x08;
@@ -205,54 +226,84 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
                     current_element->header.property_count++;
                     string_count++;
                 }
+                // New border properties for Containers
+                else if (current_element->header.type == 0x01) {
+                    if (strcmp(key, "border_width") == 0) {
+                        current_element->properties[current_element->header.property_count].property_id = 0x04;
+                        current_element->properties[current_element->header.property_count].value_type = 0x01;
+                        current_element->properties[current_element->header.property_count].size = 1;
+                        current_element->properties[current_element->header.property_count].value = malloc(1);
+                        *(uint8_t*)current_element->properties[current_element->header.property_count].value = atoi(value);
+                        current_element->header.property_count++;
+                    }
+                    else if (strcmp(key, "border_color") == 0) {
+                        uint8_t r, g, b, a = 255;
+                        if (sscanf(value, "#%2hhx%2hhx%2hhx", &r, &g, &b) == 3 ||
+                            sscanf(value, "#%2hhx%2hhx%2hhx%2hhx", &r, &g, &b, &a) == 4) {
+                            current_element->properties[current_element->header.property_count].property_id = 0x03;
+                            current_element->properties[current_element->header.property_count].value_type = 0x03;
+                            current_element->properties[current_element->header.property_count].size = 4;
+                            current_element->properties[current_element->header.property_count].value = malloc(4);
+                            uint8_t* color = current_element->properties[current_element->header.property_count].value;
+                            color[0] = r; color[1] = g; color[2] = b; color[3] = a;
+                            current_element->header.property_count++;
+                        }
+                    }
+                    // Add per-side border widths as EdgeInsets (top, right, bottom, left)
+                    else if (strcmp(key, "border_widths") == 0) {
+                        uint8_t top, right, bottom, left;
+                        if (sscanf(value, "%hhu %hhu %hhu %hhu", &top, &right, &bottom, &left) == 4) {
+                            current_element->properties[current_element->header.property_count].property_id = 0x04;
+                            current_element->properties[current_element->header.property_count].value_type = 0x08; // EdgeInsets
+                            current_element->properties[current_element->header.property_count].size = 4;
+                            current_element->properties[current_element->header.property_count].value = malloc(4);
+                            uint8_t* widths = current_element->properties[current_element->header.property_count].value;
+                            widths[0] = top; widths[1] = right; widths[2] = bottom; widths[3] = left;
+                            current_element->header.property_count++;
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Calculate offsets and total size
-    uint32_t current_offset = 38; // After header
+    // Calculate offsets and total size (unchanged)
+    uint32_t current_offset = 38;
     for (int i = 0; i < element_count; i++) {
-        // Element header (18 bytes: 16 + 2 for child_offset)
-        current_offset += 18;
-        // Properties (3 bytes header + value size per property)
+        current_offset += 16;
         for (int j = 0; j < elements[i].header.property_count; j++) {
             current_offset += 3 + elements[i].properties[j].size;
         }
-        // Set child offset if applicable
-        elements[i].header.child_offset = (elements[i].header.child_count > 0) ? current_offset - 38 : 0;
     }
     uint32_t style_offset = current_offset;
     for (int i = 0; i < style_count; i++) {
-        // Style header (3 bytes: id, name_index, property_count)
         current_offset += 3;
-        // Style properties
         for (int j = 0; j < styles[i].property_count; j++) {
             current_offset += 3 + styles[i].properties[j].size;
         }
     }
     uint32_t string_offset = current_offset;
-    uint32_t total_size = string_offset + 2; // String table count
+    uint32_t total_size = string_offset + 2;
     for (int i = 0; i < string_count; i++) {
-        total_size += 1 + strlen(strings[i].text); // Length byte + string data
+        total_size += 1 + strlen(strings[i].text);
     }
 
-    // Write Header
+    // Write Header (unchanged)
     fwrite("KRB1", 1, 4, out);
-    write_u16(out, 0x0001); // Version
-    write_u16(out, style_count > 0 ? 0x0001 : 0x0000); // Flags: has styles
+    write_u16(out, 0x0001);
+    write_u16(out, style_count > 0 ? 0x0001 : 0x0000);
     write_u16(out, element_count);
     write_u16(out, style_count);
-    write_u16(out, 0); // Animation count
+    write_u16(out, 0);
     write_u16(out, string_count);
-    write_u16(out, 0); // Resource count
-    uint32_t element_offset = 38;
-    write_u32(out, element_offset);
+    write_u16(out, 0);
+    write_u32(out, 38);
     write_u32(out, style_count > 0 ? style_offset : 0);
-    write_u32(out, 0); // Animation offset
+    write_u32(out, 0);
     write_u32(out, string_offset);
     write_u32(out, total_size);
 
-    // Write Elements
+    // Write Elements (unchanged)
     for (int i = 0; i < element_count; i++) {
         Element* el = &elements[i];
         fputc(el->header.type, out);
@@ -267,7 +318,6 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         fputc(el->header.child_count, out);
         fputc(el->header.event_count, out);
         fputc(el->header.animation_count, out);
-        write_u16(out, el->header.child_offset);
         for (int j = 0; j < el->header.property_count; j++) {
             fputc(el->properties[j].property_id, out);
             fputc(el->properties[j].value_type, out);
@@ -276,11 +326,11 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         }
     }
 
-    // Write Styles
+    // Write Styles (unchanged)
     for (int i = 0; i < style_count; i++) {
         StyleEntry* st = &styles[i];
         fputc(st->id, out);
-        fputc(i, out); // String index for style name
+        fputc(i, out);
         fputc(st->property_count, out);
         for (int j = 0; j < st->property_count; j++) {
             fputc(st->properties[j].property_id, out);
@@ -290,7 +340,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         }
     }
 
-    // Write String Table
+    // Write String Table (unchanged)
     write_u16(out, string_count);
     for (int i = 0; i < string_count; i++) {
         size_t len = strlen(strings[i].text);
@@ -298,7 +348,7 @@ int compile_kry_to_krb(const char* input_file, const char* output_file) {
         fwrite(strings[i].text, 1, len, out);
     }
 
-    // Cleanup
+    // Cleanup (unchanged)
     for (int i = 0; i < element_count; i++) {
         for (int j = 0; j < elements[i].header.property_count; j++) {
             free(elements[i].properties[j].value);

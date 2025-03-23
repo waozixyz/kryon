@@ -47,10 +47,18 @@ typedef struct {
 } KrbProperty;
 
 typedef struct {
+    uint8_t id;
+    uint8_t name_index;
+    uint8_t property_count;
+    KrbProperty* properties;
+} KrbStyle;
+
+typedef struct {
     KrbHeader header;
-    char** strings;
     KrbElementHeader* elements;
-    KrbProperty** properties; 
+    KrbProperty** properties;
+    KrbStyle* styles;
+    char** strings;
 } KrbDocument;
 
 #pragma pack(pop)
@@ -58,7 +66,7 @@ typedef struct {
 int read_header(FILE* file, KrbHeader* header);
 void read_element_header(FILE* file, KrbElementHeader* element);
 void read_property(FILE* file, KrbProperty* prop);
-int krb_read_document(FILE* file, KrbDocument* doc); // New function
-void krb_free_document(KrbDocument* doc); // Cleanup function
+int krb_read_document(FILE* file, KrbDocument* doc);
+void krb_free_document(KrbDocument* doc);
 
 #endif
