@@ -26,22 +26,18 @@ int rgb_to_tb_color(uint32_t rgba, FILE* debug_file) {
 
     fprintf(debug_file, "DEBUG: Converting RGBA=0x%08X (R=%d, G=%d, B=%d, A=%d)\n", rgba, r, g, b, a);
 
-    if (a < 128) return TB_DEFAULT; // Transparent defaults to terminal background
+    if (a < 128) return TB_DEFAULT;
 
-    // Enhanced color mapping for Termbox
-    if (r > 200 && g > 200 && b > 200) return TB_WHITE;
-    if (r > 200 && g < 100 && b < 100) return TB_RED;
-    if (r < 100 && g > 200 && b < 100) return TB_GREEN;
-    if (r < 100 && g < 100 && b > 200) return TB_BLUE; // Matches #191970FF (R=25, G=112, B=112)
-    if (r > 200 && g > 200 && b < 100) return TB_YELLOW; // Matches #FFFF00FF
-    if (r > 150 && g < 100 && b > 150) return TB_MAGENTA;
-    if (r < 100 && g > 200 && b > 200) return TB_CYAN; // Matches #00FFFFFF
-    if (r < 50 && g < 50 && b < 50) return TB_BLACK;
+    if (r > 200 && g > 200 && b > 200) return TB_WHITE;     // 8
+    if (r > 200 && g < 100 && b < 100) return TB_RED;       // 2
+    if (r < 100 && g > 200 && b < 100) return TB_GREEN;     // 3
+    if (r < 100 && g < 100 && b > 100) return TB_BLUE;      // 5 
+    if (r > 200 && g > 200 && b < 100) return TB_YELLOW;    // 4
+    if (r > 150 && g < 100 && b > 150) return TB_MAGENTA;   // 6
+    if (r < 100 && g > 200 && b > 200) return TB_CYAN;      // 7
+    if (r < 50 && g < 50 && b < 50) return TB_BLACK;        // 1
 
-    // Fallback for dark blue like #191970FF
-    if (r < 100 && g > 50 && b > 50) return TB_BLUE;
-
-    return TB_DEFAULT;
+    return TB_DEFAULT; // 0
 }
 
 char* strip_quotes(const char* input) {
@@ -67,7 +63,7 @@ void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_f
     if (el->bg_color == 0 && el->parent) el->bg_color = el->parent->bg_color;
     if (el->fg_color == 0 && el->parent) el->fg_color = el->parent->fg_color;
     if (el->border_color == 0 && el->parent) el->border_color = el->parent->border_color;
-    if (el->bg_color == 0) el->bg_color = 0x000000FF; // Default transparent (will use TB_DEFAULT)
+    if (el->bg_color == 0) el->bg_color = 0x000000FF; // Default transparent
     if (el->fg_color == 0) el->fg_color = 0xFFFFFFFF; // Default white
     if (el->border_color == 0) el->border_color = 0x808080FF; // Default gray
 
@@ -100,8 +96,12 @@ void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_f
                 if (is_border) {
                     char border_char = (i == 0 || i == width-1) ? (j == 0 || j == height-1 ? '+' : '|') : '-';
                     tb_change_cell(cur_x, cur_y, border_char, border_color, bg_color);
+                    fprintf(debug_file, "DEBUG: Set cell (%d, %d) to '%c', fg=%d, bg=%d\n", 
+                            cur_x, cur_y, border_char, border_color, bg_color);
                 } else {
-                    tb_change_cell(cur_x, cur_y, ' ', fg_color, bg_color); // Explicitly fill background
+                    tb_change_cell(cur_x, cur_y, ' ', fg_color, bg_color);
+                    fprintf(debug_file, "DEBUG: Set cell (%d, %d) to ' ', fg=%d, bg=%d\n", 
+                            cur_x, cur_y, fg_color, bg_color);
                 }
             }
         }
@@ -119,9 +119,13 @@ void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_f
             size_t text_len = strlen(el->text);
             for (int i = 0; i < width - 2 && text_x + i < width_term; i++) {
                 tb_change_cell(text_x + i, text_y, ' ', fg_color, bg_color);
+                fprintf(debug_file, "DEBUG: Set cell (%d, %d) to ' ', fg=%d, bg=%d\n", 
+                        text_x + i, text_y, fg_color, bg_color);
             }
             for (size_t i = 0; i < text_len && i < width - 2 && text_x + i < width_term; i++) {
                 tb_change_cell(text_x + i, text_y, el->text[i], fg_color, bg_color);
+                fprintf(debug_file, "DEBUG: Set cell (%zu, %d) to '%c', fg=%d, bg=%d\n", 
+                        (size_t)(text_x + i), text_y, el->text[i], fg_color, bg_color);
             }
         }
     }
@@ -228,6 +232,12 @@ int main(int argc, char* argv[]) {
     }
     tb_clear();
 
+    // Log Termbox color constants for verification
+    fprintf(debug_file, "DEBUG: TB_BLACK=%d, TB_RED=%d, TB_GREEN=%d, TB_YELLOW=%d, TB_BLUE=%d, TB_MAGENTA=%d, TB_CYAN=%d, TB_WHITE=%d\n",
+            TB_BLACK, TB_RED, TB_GREEN, TB_YELLOW, TB_BLUE, TB_MAGENTA, TB_CYAN, TB_WHITE);
+
+    // Render your elements directly
+    struct tb_event ev;
     for (int i = 0; i < doc.header.element_count; i++) {
         if (!elements[i].parent) {
             render_element(&elements[i], 0, 0, debug_file);
@@ -235,8 +245,7 @@ int main(int argc, char* argv[]) {
     }
     tb_present();
 
-    struct tb_event ev;
-    tb_poll_event(&ev);
+    tb_poll_event(&ev); // Wait for keypress to exit
     tb_shutdown();
 
 cleanup:

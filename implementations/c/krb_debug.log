@@ -1,12 +1,228 @@
-Element 0: type=0x01, style_id=1, props=0
-Element 1: type=0x02, style_id=0, props=1
-DEBUG: Converting RGBA=0x191970FF (R=25, G=25, B=112, A=255)
-DEBUG: Converting RGBA=0xFFFF00FF (R=255, G=255, B=0, A=255)
-DEBUG: Converting RGBA=0x00FFFFFF (R=0, G=255, B=255, A=255)
-DEBUG: Rendering element type=0x01 at (20, 10), size=20x10, text=NULL, bg=0x191970FF (0), fg=0xFFFF00FF (4), border=0x00FFFFFF (7)
-DEBUG: Drawing Container with border widths: top=1, right=1, bottom=1, left=1
-DEBUG: Converting RGBA=0x191970FF (R=25, G=25, B=112, A=255)
-DEBUG: Converting RGBA=0xFFFF00FF (R=255, G=255, B=0, A=255)
-DEBUG: Converting RGBA=0x00FFFFFF (R=0, G=255, B=255, A=255)
-DEBUG: Rendering element type=0x02 at (22, 12), size=18x8, text=Hello World, bg=0x191970FF (0), fg=0xFFFF00FF (4), border=0x00FFFFFF (7)
-DEBUG: Rendering text 'Hello World' at (23, 13) with fg=0xFFFF00FF (4), bg=0x191970FF (0)
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World
+DEBUG: Rendering element type=0x01 at (200, 100), size=200x100, text=NULL
+DEBUG: Rendering element type=0x02 at (211, 111), size=180x80, text=Hello World

@@ -1,13 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "raylib.h"
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
 #include "krb.h"
 
 #define MAX_ELEMENTS 256
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
-#define SCALE_FACTOR 1
+#define SCALE_FACTOR 2
 
 typedef struct RenderElement {
     KrbElementHeader header;
@@ -21,12 +22,12 @@ typedef struct RenderElement {
     int child_count;
 } RenderElement;
 
-Color rgba_to_raylib_color(uint32_t rgba) {
+SDL_Color rgba_to_sdl_color(uint32_t rgba) {
     uint8_t r = (rgba >> 24) & 0xFF;
     uint8_t g = (rgba >> 16) & 0xFF;
     uint8_t b = (rgba >> 8) & 0xFF;
     uint8_t a = rgba & 0xFF;
-    return (Color){r, g, b, a};
+    return (SDL_Color){r, g, b, a};
 }
 
 char* strip_quotes(const char* input) {
@@ -41,15 +42,14 @@ char* strip_quotes(const char* input) {
     return strdup(input);
 }
 
-void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_file) {
+void render_element(SDL_Renderer* renderer, TTF_Font* font, RenderElement* el, int parent_x, int parent_y, FILE* debug_file) {
     int x = parent_x + (el->header.pos_x * SCALE_FACTOR);
     int y = parent_y + (el->header.pos_y * SCALE_FACTOR);
     int width = (el->header.width * SCALE_FACTOR);
     int height = (el->header.height * SCALE_FACTOR);
-    if (width < 10) width = 10;  // Minimum size in pixels
+    if (width < 10) width = 10;
     if (height < 6) height = 6;
 
-    // Inherit colors from parent if not set
     if (el->bg_color == 0 && el->parent) el->bg_color = el->parent->bg_color;
     if (el->fg_color == 0 && el->parent) el->fg_color = el->parent->fg_color;
     if (el->border_color == 0 && el->parent) el->border_color = el->parent->border_color;
@@ -57,16 +57,18 @@ void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_f
     if (el->fg_color == 0) el->fg_color = 0xFFFFFFFF;     // Default white
     if (el->border_color == 0) el->border_color = 0x808080FF; // Default gray
 
-    Color bg_color = rgba_to_raylib_color(el->bg_color);
-    Color fg_color = rgba_to_raylib_color(el->fg_color);
-    Color border_color = rgba_to_raylib_color(el->border_color);
+    SDL_Color bg_color = rgba_to_sdl_color(el->bg_color);
+    SDL_Color fg_color = rgba_to_sdl_color(el->fg_color);
+    SDL_Color border_color = rgba_to_sdl_color(el->border_color);
 
     fprintf(debug_file, "DEBUG: Rendering element type=0x%02X at (%d, %d), size=%dx%d, text=%s\n",
             el->header.type, x, y, width, height, el->text ? el->text : "NULL");
 
     if (el->header.type == 0x01) { // Container
         // Draw background
-        DrawRectangle(x, y, width, height, bg_color);
+        SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
+        SDL_Rect bg_rect = {x, y, width, height};
+        SDL_RenderFillRect(renderer, &bg_rect);
 
         // Draw borders
         int top = el->border_widths[0] * SCALE_FACTOR;
@@ -74,28 +76,48 @@ void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_f
         int bottom = el->border_widths[2] * SCALE_FACTOR;
         int left = el->border_widths[3] * SCALE_FACTOR;
 
-        if (top > 0)
-            DrawRectangle(x, y, width, top, border_color);
-        if (bottom > 0)
-            DrawRectangle(x, y + height - bottom, width, bottom, border_color);
-        if (left > 0)
-            DrawRectangle(x, y, left, height, border_color);
-        if (right > 0)
-            DrawRectangle(x + width - right, y, right, height, border_color);
+        SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g, border_color.b, border_color.a);
+        if (top > 0) {
+            SDL_Rect top_rect = {x, y, width, top};
+            SDL_RenderFillRect(renderer, &top_rect);
+        }
+        if (bottom > 0) {
+            SDL_Rect bottom_rect = {x, y + height - bottom, width, bottom};
+            SDL_RenderFillRect(renderer, &bottom_rect);
+        }
+        if (left > 0) {
+            SDL_Rect left_rect = {x, y, left, height};
+            SDL_RenderFillRect(renderer, &left_rect);
+        }
+        if (right > 0) {
+            SDL_Rect right_rect = {x + width - right, y, right, height};
+            SDL_RenderFillRect(renderer, &right_rect);
+        }
 
         // Render children
         for (int i = 0; i < el->child_count; i++) {
-            render_element(el->children[i], x + left, y + top, debug_file);
+            render_element(renderer, font, el->children[i], x + left, y + top, debug_file);
         }
     } else if (el->header.type == 0x02 && el->text) { // Text
-        int text_x = x + (2 * SCALE_FACTOR);  // Padding
+        int text_x = x + (2 * SCALE_FACTOR);
         int text_y = y + (2 * SCALE_FACTOR);
-        
+
         // Draw text background
-        DrawRectangle(x, y, width, height, bg_color);
-        
+        SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
+        SDL_Rect bg_rect = {x, y, width, height};
+        SDL_RenderFillRect(renderer, &bg_rect);
+
         // Draw text
-        DrawText(el->text, text_x, text_y, 20, fg_color);
+        SDL_Surface* text_surface = TTF_RenderText_Solid(font, el->text, fg_color);
+        if (text_surface) {
+            SDL_Texture* text_texture = SDL_CreateTextureFromSurface(renderer, text_surface);
+            if (text_texture) {
+                SDL_Rect text_rect = {text_x, text_y, text_surface->w, text_surface->h};
+                SDL_RenderCopy(renderer, text_texture, NULL, &text_rect);
+                SDL_DestroyTexture(text_texture);
+            }
+            SDL_FreeSurface(text_surface);
+        }
     }
 }
 
@@ -130,7 +152,6 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < doc.header.element_count; i++) {
         elements[i].header = doc.elements[i];
         
-        // Apply styles
         if (elements[i].header.style_id > 0 && elements[i].header.style_id <= doc.header.style_count) {
             KrbStyle* style = &doc.styles[elements[i].header.style_id - 1];
             for (int j = 0; j < style->property_count; j++) {
@@ -155,7 +176,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Apply element properties
         for (int j = 0; j < elements[i].header.property_count; j++) {
             KrbProperty* prop = &doc.properties[i][j];
             if (prop->property_id == 0x01 && prop->value_type == 0x03 && prop->size == 4) {
@@ -183,7 +203,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Build hierarchy
     for (int i = 0; i < doc.header.element_count; i++) {
         if (elements[i].header.child_count > 0) {
             int child_start = i + 1;
@@ -195,27 +214,80 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Initialize Raylib
-    InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "KRB Renderer (Raylib)");
-    SetTargetFPS(60);
+    // Initialize SDL
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        fprintf(debug_file, "ERROR: SDL could not initialize! SDL_Error: %s\n", SDL_GetError());
+        goto cleanup;
+    }
 
-    while (!WindowShouldClose()) {
-        BeginDrawing();
-        ClearBackground(BLACK);
+    if (TTF_Init() == -1) {
+        fprintf(debug_file, "ERROR: SDL_ttf could not initialize! TTF_Error: %s\n", TTF_GetError());
+        SDL_Quit();
+        goto cleanup;
+    }
+
+    SDL_Window* window = SDL_CreateWindow("KRB Renderer (SDL2)",
+                                        SDL_WINDOWPOS_UNDEFINED,
+                                        SDL_WINDOWPOS_UNDEFINED,
+                                        WINDOW_WIDTH, WINDOW_HEIGHT,
+                                        SDL_WINDOW_SHOWN);
+    if (!window) {
+        fprintf(debug_file, "ERROR: Window could not be created! SDL_Error: %s\n", SDL_GetError());
+        TTF_Quit();
+        SDL_Quit();
+        goto cleanup;
+    }
+
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!renderer) {
+        fprintf(debug_file, "ERROR: Renderer could not be created! SDL_Error: %s\n", SDL_GetError());
+        SDL_DestroyWindow(window);
+        TTF_Quit();
+        SDL_Quit();
+        goto cleanup;
+    }
+
+    TTF_Font* font = TTF_OpenFont("DejaVuSans.ttf", 20); // You'll need a font file
+    if (!font) {
+        fprintf(debug_file, "ERROR: Failed to load font! TTF_Error: %s\n", TTF_GetError());
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        TTF_Quit();
+        SDL_Quit();
+        goto cleanup;
+    }
+
+    SDL_bool running = SDL_TRUE;
+    SDL_Event event;
+
+    while (running) {
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                running = SDL_FALSE;
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // Black background
+        SDL_RenderClear(renderer);
 
         // Render all root elements
         for (int i = 0; i < doc.header.element_count; i++) {
             if (!elements[i].parent) {
-                render_element(&elements[i], 0, 0, debug_file);
+                render_element(renderer, font, &elements[i], 0, 0, debug_file);
             }
         }
 
-        EndDrawing();
+        SDL_RenderPresent(renderer);
     }
 
-    CloseWindow();
+    // Cleanup SDL
+    TTF_CloseFont(font);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    TTF_Quit();
+    SDL_Quit();
 
-    // Cleanup
+cleanup:
     for (int i = 0; i < doc.header.element_count; i++) {
         free(elements[i].text);
     }
