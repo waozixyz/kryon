@@ -63,7 +63,6 @@ void read_property(FILE* file, KrbProperty* prop) {
         prop->value = malloc(prop->size);
         fread(prop->value, 1, prop->size, file);
 
-        // Adjust byte order based on value_type
         switch (prop->value_type) {
             case 0x02: // Short (16-bit)
                 if (prop->size == 2) {
@@ -71,11 +70,7 @@ void read_property(FILE* file, KrbProperty* prop) {
                     *(uint16_t*)prop->value = (uint16_t)(bytes[0] | (bytes[1] << 8));
                 }
                 break;
-            case 0x03: // Color (RGBA)
-                if (prop->size == 4) {
-                    uint8_t* bytes = (uint8_t*)prop->value;
-                    *(uint32_t*)prop->value = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
-                }
+            case 0x03: // Color (RGBA) - No reordering, keep as written
                 break;
             case 0x06: // Percentage (8.8 fixed-point)
                 if (prop->size == 2) {
@@ -83,11 +78,9 @@ void read_property(FILE* file, KrbProperty* prop) {
                     *(uint16_t*)prop->value = (uint16_t)(bytes[0] | (bytes[1] << 8));
                 }
                 break;
-            case 0x08: // EdgeInsets (4 bytes: top, right, bottom, left)
-                // No reordering needed, stored as-is
+            case 0x08: // EdgeInsets
                 break;
             default:
-                // Other types (e.g., Byte, String index, Resource index) don't need reordering
                 break;
         }
     } else {

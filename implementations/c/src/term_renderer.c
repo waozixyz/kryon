@@ -9,10 +9,11 @@
 typedef struct RenderElement {
     KrbElementHeader header;
     char* text;
-    uint32_t bg_color;      // Background color (RGBA)
-    uint32_t fg_color;      // Text/Foreground color (RGBA)
-    uint32_t border_color;  // Border color (RGBA)
-    uint8_t border_widths[4]; // Top, right, bottom, left
+    uint32_t bg_color;
+    uint32_t fg_color;
+    uint32_t border_color;
+    uint8_t border_widths[4];
+    uint8_t text_alignment; // NEW: 0=left, 1=center, 2=right
     struct RenderElement* parent;
     struct RenderElement* children[MAX_ELEMENTS];
     int child_count;
@@ -28,16 +29,16 @@ int rgb_to_tb_color(uint32_t rgba, FILE* debug_file) {
 
     if (a < 128) return TB_DEFAULT;
 
-    if (r > 200 && g > 200 && b > 200) return TB_WHITE;     // 8
-    if (r > 200 && g < 100 && b < 100) return TB_RED;       // 2
-    if (r < 100 && g > 200 && b < 100) return TB_GREEN;     // 3
-    if (r < 100 && g < 100 && b > 100) return TB_BLUE;      // 5 
-    if (r > 200 && g > 200 && b < 100) return TB_YELLOW;    // 4
-    if (r > 150 && g < 100 && b > 150) return TB_MAGENTA;   // 6
-    if (r < 100 && g > 200 && b > 200) return TB_CYAN;      // 7
-    if (r < 50 && g < 50 && b < 50) return TB_BLACK;        // 1
+    if (r > 200 && g > 200 && b > 200) return TB_WHITE;
+    if (r > 200 && g < 100 && b < 100) return TB_RED;
+    if (r < 100 && g > 200 && b < 100) return TB_GREEN;
+    if (r < 100 && g < 100 && b > 100) return TB_BLUE;
+    if (r > 200 && g > 200 && b < 100) return TB_YELLOW;
+    if (r > 150 && g < 100 && b > 150) return TB_MAGENTA;
+    if (r < 100 && g > 200 && b > 200) return TB_CYAN;
+    if (r < 50 && g < 50 && b < 50) return TB_BLACK;
 
-    return TB_DEFAULT; // 0
+    return TB_DEFAULT;
 }
 
 char* strip_quotes(const char* input) {
@@ -57,16 +58,21 @@ void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_f
     int y = parent_y + el->header.pos_y / 10;
     int width = el->header.width / 10;
     int height = el->header.height / 10;
-    if (width < 5) width = 5;
-    if (height < 3) height = 3;
 
-    // Inherit from parent if not set (cascading handled in main)
+    if (el->header.type == 0x02 && el->text) { // Auto-size Text properly
+        width = el->header.width == 0 ? strlen(el->text) + 2 : width;
+        height = el->header.height == 0 ? 3 : height;
+    } else {
+        if (width < 5) width = 5;
+        if (height < 3) height = 3;
+    }
+
     if (el->bg_color == 0 && el->parent) el->bg_color = el->parent->bg_color;
     if (el->fg_color == 0 && el->parent) el->fg_color = el->parent->fg_color;
     if (el->border_color == 0 && el->parent) el->border_color = el->parent->border_color;
-    if (el->bg_color == 0) el->bg_color = 0x000000FF; // Default black
-    if (el->fg_color == 0) el->fg_color = 0xFFFFFFFF; // Default white
-    if (el->border_color == 0) el->border_color = 0x808080FF; // Default gray
+    if (el->bg_color == 0) el->bg_color = 0x000000FF;
+    if (el->fg_color == 0) el->fg_color = 0xFFFFFFFF;
+    if (el->border_color == 0) el->border_color = 0x808080FF;
 
     int width_term = tb_width();
     int height_term = tb_height();
@@ -79,12 +85,10 @@ void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_f
     int fg_color = rgb_to_tb_color(el->fg_color, debug_file);
     int border_color = rgb_to_tb_color(el->border_color, debug_file);
 
-    fprintf(debug_file, "DEBUG: Rendering element type=0x%02X at (%d, %d), size=%dx%d, text=%s, bg=0x%08X (%d), fg=0x%08X (%d), border=0x%08X (%d)\n",
-            el->header.type, x, y, width, height, el->text ? el->text : "NULL", el->bg_color, bg_color, el->fg_color, fg_color, el->border_color, border_color);
+    fprintf(debug_file, "DEBUG: Rendering element type=0x%02X at (%d, %d), size=%dx%d, text=%s, bg=0x%08X (%d), fg=0x%08X (%d), border=0x%08X (%d), layout=0x%02X\n",
+            el->header.type, x, y, width, height, el->text ? el->text : "NULL", el->bg_color, bg_color, el->fg_color, fg_color, el->border_color, border_color, el->header.layout);
 
-    if (el->header.type == 0x00) { // App (root element)
-        // App doesn’t render visually in Termbox, but we set up its children
-        fprintf(debug_file, "DEBUG: App element, rendering children only\n");
+    if (el->header.type == 0x00) { // App
         for (int i = 0; i < el->child_count; i++) {
             render_element(el->children[i], x, y, debug_file);
         }
@@ -103,40 +107,65 @@ void render_element(RenderElement* el, int parent_x, int parent_y, FILE* debug_f
                 if (is_border) {
                     char border_char = (i == 0 || i == width-1) ? (j == 0 || j == height-1 ? '+' : '|') : '-';
                     tb_change_cell(cur_x, cur_y, border_char, border_color, bg_color);
-                    fprintf(debug_file, "DEBUG: Set cell (%d, %d) to '%c', fg=%d, bg=%d\n", 
-                            cur_x, cur_y, border_char, border_color, bg_color);
                 } else {
                     tb_change_cell(cur_x, cur_y, ' ', fg_color, bg_color);
-                    fprintf(debug_file, "DEBUG: Set cell (%d, %d) to ' ', fg=%d, bg=%d\n", 
-                            cur_x, cur_y, fg_color, bg_color);
                 }
             }
         }
 
-        for (int i = 0; i < el->child_count; i++) {
-            render_element(el->children[i], x + el->border_widths[3], y + el->border_widths[0], debug_file);
+        int content_x = x + el->border_widths[3];
+        int content_y = y + el->border_widths[0];
+        int content_width = width - el->border_widths[3] - el->border_widths[1];
+        int content_height = height - el->border_widths[0] - el->border_widths[2];
+        uint8_t alignment = (el->header.layout >> 2) & 0x03;
+        uint8_t direction = el->header.layout & 0x03;
+
+        if (alignment == 0x01 && direction == 0x01) { // Center, Column
+            int total_child_height = 0;
+            for (int i = 0; i < el->child_count; i++) {
+                int child_height = el->children[i]->header.height / 10 ? el->children[i]->header.height / 10 : (el->children[i]->text ? 3 : 3);
+                total_child_height += child_height;
+            }
+            int start_y = content_y + (content_height - total_child_height) / 2;
+            for (int i = 0; i < el->child_count; i++) {
+                int child_width = el->children[i]->header.width / 10 ? el->children[i]->header.width / 10 : (el->children[i]->text ? strlen(el->children[i]->text) + 2 : 5);
+                int child_x = content_x + (content_width - child_width) / 2;
+                render_element(el->children[i], child_x, start_y, debug_file);
+                start_y += (el->children[i]->header.height / 10 ? el->children[i]->header.height / 10 : 3);
+            }
+        } else {
+            for (int i = 0; i < el->child_count; i++) {
+                render_element(el->children[i], content_x, content_y, debug_file);
+            }
         }
     } else if (el->header.type == 0x02 && el->text) { // Text
-        int text_x = x + 1;
-        int text_y = y + 1;
-        fprintf(debug_file, "DEBUG: Rendering text '%s' at (%d, %d) with fg=0x%08X (%d), bg=0x%08X (%d)\n", 
-                el->text, text_x, text_y, el->fg_color, fg_color, el->bg_color, bg_color);
+        int text_len = strlen(el->text);
+        int text_x;
+        switch (el->text_alignment) {
+            case 1: // Center
+                text_x = x + (width - text_len) / 2;
+                break;
+            case 2: // Right
+                text_x = x + width - text_len - 1;
+                break;
+            case 0: // Left
+            default:
+                text_x = x + 1;
+                break;
+        }
+        int text_y = y + (height - 1) / 2;
+
+        fprintf(debug_file, "DEBUG: Rendering text '%s' at (%d, %d) with fg=0x%08X (%d), bg=0x%08X (%d), alignment=%d\n", 
+                el->text, text_x, text_y, el->fg_color, fg_color, el->bg_color, bg_color, el->text_alignment);
 
         if (text_x < width_term && text_y < height_term) {
-            size_t text_len = strlen(el->text);
-            for (int i = 0; i < width - 2 && text_x + i < width_term; i++) {
-                tb_change_cell(text_x + i, text_y, ' ', fg_color, bg_color);
-                fprintf(debug_file, "DEBUG: Set cell (%d, %d) to ' ', fg=%d, bg=%d\n", 
-                        text_x + i, text_y, fg_color, bg_color);
+            for (int i = 0; i < width && x + i < width_term; i++) {
+                tb_change_cell(x + i, text_y, ' ', fg_color, bg_color);
             }
-            for (size_t i = 0; i < text_len && i < width - 2 && text_x + i < width_term; i++) {
+            for (int i = 0; i < text_len && text_x + i < width_term; i++) {
                 tb_change_cell(text_x + i, text_y, el->text[i], fg_color, bg_color);
-                fprintf(debug_file, "DEBUG: Set cell (%zu, %d) to '%c', fg=%d, bg=%d\n", 
-                        (size_t)(text_x + i), text_y, el->text[i], fg_color, bg_color);
             }
         }
-    } else if (el->header.type == 0x30) { // Video (placeholder)
-        fprintf(debug_file, "DEBUG: Video element (type 0x30) not supported in Termbox, skipping\n");
     }
 }
 
@@ -170,18 +199,14 @@ int main(int argc, char* argv[]) {
     RenderElement* elements = calloc(doc.header.element_count, sizeof(RenderElement));
     RenderElement* app_element = NULL;
 
-    // Process elements and apply cascading styles from App
     for (int i = 0; i < doc.header.element_count; i++) {
         elements[i].header = doc.elements[i];
-        fprintf(debug_file, "Element %d: type=0x%02X, style_id=%d, props=%d\n",
-                i, elements[i].header.type, elements[i].header.style_id, elements[i].header.property_count);
+        elements[i].text_alignment = 0; // Default to left
 
         if (elements[i].header.type == 0x00) {
             app_element = &elements[i];
-            fprintf(debug_file, "DEBUG: Found App element at index %d\n", i);
         }
 
-        // Apply styles from style_id
         if (elements[i].header.style_id > 0 && elements[i].header.style_id <= doc.header.style_count) {
             KrbStyle* style = &doc.styles[elements[i].header.style_id - 1];
             for (int j = 0; j < style->property_count; j++) {
@@ -206,7 +231,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Apply element-specific properties
         for (int j = 0; j < elements[i].header.property_count; j++) {
             KrbProperty* prop = &doc.properties[i][j];
             if (prop->property_id == 0x01 && prop->value_type == 0x03 && prop->size == 4) {
@@ -230,7 +254,9 @@ int main(int argc, char* argv[]) {
                 if (string_index < doc.header.string_count && doc.strings[string_index]) {
                     elements[i].text = strip_quotes(doc.strings[string_index]);
                 }
-            } else if (elements[i].header.type == 0x00) { // App-specific properties
+            } else if (prop->property_id == 0x0B && prop->value_type == 0x09 && prop->size == 1) {
+                elements[i].text_alignment = *(uint8_t*)prop->value;
+            } else if (elements[i].header.type == 0x00) {
                 if (prop->property_id == 0x20 && prop->value_type == 0x02 && prop->size == 2) {
                     uint16_t window_width = *(uint16_t*)prop->value;
                     fprintf(debug_file, "DEBUG: App WindowWidth=%d (not applied in Termbox)\n", window_width);
@@ -272,11 +298,9 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Apply cascading styles from App to children
     if (app_element) {
         for (int i = 0; i < doc.header.element_count; i++) {
             if (elements[i].header.type != 0x00 && elements[i].header.style_id == 0) {
-                // If no style_id, inherit from App unless overridden by a parent later
                 elements[i].bg_color = elements[i].bg_color ? elements[i].bg_color : app_element->bg_color;
                 elements[i].fg_color = elements[i].fg_color ? elements[i].fg_color : app_element->fg_color;
                 elements[i].border_color = elements[i].border_color ? elements[i].border_color : app_element->border_color;
@@ -288,7 +312,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Build parent-child relationships
     for (int i = 0; i < doc.header.element_count; i++) {
         if (elements[i].header.child_count > 0) {
             int child_start = i + 1;
@@ -306,10 +329,6 @@ int main(int argc, char* argv[]) {
     }
     tb_clear();
 
-    fprintf(debug_file, "DEBUG: TB_BLACK=%d, TB_RED=%d, TB_GREEN=%d, TB_YELLOW=%d, TB_BLUE=%d, TB_MAGENTA=%d, TB_CYAN=%d, TB_WHITE=%d\n",
-            TB_BLACK, TB_RED, TB_GREEN, TB_YELLOW, TB_BLUE, TB_MAGENTA, TB_CYAN, TB_WHITE);
-
-    // Render elements starting from root (App or first non-parent element)
     for (int i = 0; i < doc.header.element_count; i++) {
         if (!elements[i].parent) {
             render_element(&elements[i], 0, 0, debug_file);
@@ -318,7 +337,7 @@ int main(int argc, char* argv[]) {
     tb_present();
 
     struct tb_event ev;
-    tb_poll_event(&ev); // Wait for keypress to exit
+    tb_poll_event(&ev);
     tb_shutdown();
 
 cleanup:
