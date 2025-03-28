@@ -1,8 +1,13 @@
-style "style1" {
+style "appstyle" {
+    text_color: #FFFF00FF
+    background_color: #191919FF
+}
+
+style "containerstyle" {
     border_width: 1
     background_color: #191970FF
     border_color: #00FFFFFF
-    text_color: #FFFF00FF  
+    layout: center
 }
 
 App {
@@ -15,20 +20,18 @@ App {
     icon: "app_icon.png"
     version: "1.0.0"
     author: "Lyraverse"
-    style: "style1" 
+    style: "appstyle"
     
     Container {
         pos_x: 200
         pos_y: 100
         width: 200
         height: 100
+        style: "containerstyle"
 
         Text {
-            pos_x: 10
-            pos_y: 10
-            width: 180
-            height: 80
             text: "Hello World"
+            text_alignment: center 
         }
     }
 }
