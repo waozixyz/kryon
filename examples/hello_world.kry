@@ -19,7 +19,7 @@ App {
     scale_factor: 1.0
     icon: "app_icon.png"
     version: "1.0.0"
-    author: "Lyraverse"
+    author: "WaoziXyz"
     style: "appstyle"
     
     Container {

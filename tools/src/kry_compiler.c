@@ -64,6 +64,7 @@
 #define PROP_ID_SHADOW          0x17
 #define PROP_ID_OVERFLOW        0x18
 #define PROP_ID_CUSTOM          0x19 // Uses string table ref for name
+#define PROP_ID_LAYOUT_FLAGS    0x1A
 // App Specific
 #define PROP_ID_WINDOW_WIDTH    0x20
 #define PROP_ID_WINDOW_HEIGHT   0x21
@@ -417,7 +418,6 @@ void add_resource_path_property_to_list(KrbProperty* prop_array, uint8_t* prop_c
     uint8_t str_index = add_string(path_str);
     add_property_to_list(prop_array, prop_count, current_size, prop_id, VAL_TYPE_STRING, 1, &str_index);
 }
-
 // --- Pass 1: Parsing and Size Calculation ---
 int parse_and_calculate_sizes(FILE* in) {
     char line[MAX_LINE_LENGTH];
@@ -428,228 +428,402 @@ int parse_and_calculate_sizes(FILE* in) {
     int element_index_stack[MAX_ELEMENTS];
     int element_stack_top = -1;
     int line_num = 0;
-    g_header_flags = 0;
+    g_header_flags = 0; // Reset flags at start of parse
 
     while (fgets(line, sizeof(line), in)) {
         line_num++;
+
+        // Trim whitespace and comments
         char* trimmed = line; int indent = 0;
         while (*trimmed == ' ' || *trimmed == '\t') { indent += (*trimmed == '\t' ? 4 : 1); trimmed++; }
         char* end = trimmed + strlen(trimmed) - 1; while (end >= trimmed && isspace((unsigned char)*end)) *end-- = '\0';
-        if (*trimmed == '\0' || *trimmed == '#') continue;
+        if (*trimmed == '\0' || *trimmed == '#') continue; // Skip empty or comment lines
 
         // --- End Block Logic ---
         if (*trimmed == '}') {
             if (current_element && element_stack_top >= 0 && indent == element_indent_stack[element_stack_top]) {
-                current_element->calculated_size += current_element->event_count * 2 + current_element->animation_count * 2 + current_element->child_count * 2;
+                // Finalize size calculation for element *after* properties and children are processed
+                // Add size for variable-length sections following properties:
+                current_element->calculated_size += current_element->event_count * 2; // Event Type(1) + Callback ID(1)
+                // current_element->calculated_size += current_element->animation_count * 2; // Animation Index(1) + Trigger(1)
+                current_element->calculated_size += current_element->child_count * 2; // Child Offset(2)
+
+                // Pop element from stack
                 element_stack_top--;
                 current_indent = (element_stack_top >= 0) ? element_indent_stack[element_stack_top] : -1;
                 current_element = (element_stack_top >= 0) ? &g_elements[element_index_stack[element_stack_top]] : NULL;
-                continue;
+                continue; // Done processing the '}' line
             } else if (current_style && indent == current_indent) {
-                current_style = NULL; current_indent = -1; continue;
+                // End of style block
+                current_style = NULL;
+                current_indent = -1;
+                continue; // Done processing the '}' line
             } else {
-                 fprintf(stderr, "Error line %d: Mismatched '}' or indentation. Indent: %d, Expected: %d\n", line_num, indent, current_indent); return 1;
+                 // Mismatched '}' or indentation error
+                 fprintf(stderr, "Error line %d: Mismatched '}' or indentation. Current Indent: %d, Expected: %d\n", line_num, indent, current_indent);
+                 return 1; // Parsing failed
             }
         }
 
         // --- Start New Block Logic ---
+        // Check for Style Definition: "style "name" {"
         if (strncmp(trimmed, "style ", 6) == 0 && strstr(trimmed, "{")) {
-             if (current_element || current_style) { fprintf(stderr, "Error line %d: Cannot nest blocks.\n", line_num); return 1; }
+             if (current_element || current_style) { // Cannot nest blocks
+                 fprintf(stderr, "Error line %d: Cannot define style inside another block.\n", line_num);
+                 return 1;
+             }
              char style_name[128];
-             if (sscanf(trimmed, "style \"%127[^\"]\" {", style_name) == 1) {
-                if (g_style_count >= MAX_STYLES) { fprintf(stderr, "Error line %d: Max styles (%d) exceeded.\n", line_num, MAX_STYLES); return 1; }
-                current_style = &g_styles[g_style_count]; // Get pointer to the *next available* style entry
-                // *** Explicit Initialization of the StyleEntry ***
-                memset(current_style, 0, sizeof(StyleEntry)); // Zero out the struct
-                current_style->id = g_style_count + 1;
+             if (sscanf(trimmed, "style \"%127[^\"]\" {", style_name) == 1) { // Extract quoted name
+                if (g_style_count >= MAX_STYLES) {
+                    fprintf(stderr, "Error line %d: Maximum style count (%d) exceeded.\n", line_num, MAX_STYLES);
+                    return 1;
+                }
+                // Initialize the new style entry
+                current_style = &g_styles[g_style_count];
+                memset(current_style, 0, sizeof(StyleEntry));
+                current_style->id = g_style_count + 1; // 1-based ID
                 current_style->name_index = add_string(style_name);
-                current_style->property_count = 0; // Redundant due to memset, but explicit
-                current_style->calculated_size = 1 + 1 + 1; // Base size: ID(1) + NameIndex(1) + PropCount(1)
-                // *** End Initialization ***
-                g_style_count++; // Increment count *after* using it as index
-                current_indent = indent; g_header_flags |= FLAG_HAS_STYLES;
-             } else { fprintf(stderr, "Error line %d: Invalid style definition (use quotes): %s\n", line_num, trimmed); return 1; }
+                // Base size: ID(1) + NameIndex(1) + PropCount(1)
+                current_style->calculated_size = 1 + 1 + 1;
+                g_style_count++; // Increment *after* using current count as index
+                current_indent = indent; // Set expected indent for properties
+                g_header_flags |= FLAG_HAS_STYLES; // Mark that styles are present
+             } else {
+                 fprintf(stderr, "Error line %d: Invalid style definition syntax (use quotes for name): %s\n", line_num, trimmed);
+                 return 1;
+             }
         }
-        else if (isalpha((unsigned char)*trimmed) && strstr(trimmed, "{")) { // Potential Element Start
-             if (current_style) { fprintf(stderr, "Error line %d: Cannot define element inside style.\n", line_num); return 1; }
-             if (g_element_count >= MAX_ELEMENTS) { fprintf(stderr, "Error line %d: Max elements (%d) exceeded.\n", line_num, MAX_ELEMENTS); return 1; }
-
-             Element* parent = (element_stack_top >= 0) ? &g_elements[element_index_stack[element_stack_top]] : NULL;
-             current_element = &g_elements[g_element_count]; // Get pointer
-
-             // *** Explicit Initialization of the Element ***
-             memset(current_element, 0, sizeof(Element)); // Zero out the whole struct
-             current_element->self_index = g_element_count;
-             current_element->parent_index = (parent) ? parent->self_index : -1;
-             current_element->calculated_size = 16; // Base header size
-             // *** End Initialization ***
-
-             // Determine Type
-             if (strncmp(trimmed, "App {", 5) == 0) { current_element->type = ELEM_TYPE_APP; if (g_has_app || parent) { fprintf(stderr, "Error line %d: Invalid App definition.\n", line_num); return 1; } g_has_app = 1; g_header_flags |= FLAG_HAS_APP; }
-             else if (strncmp(trimmed, "Container {", 11) == 0) { current_element->type = ELEM_TYPE_CONTAINER; }
-             else if (strncmp(trimmed, "Text {", 6) == 0) { current_element->type = ELEM_TYPE_TEXT; }
-             else if (strncmp(trimmed, "Image {", 7) == 0) { current_element->type = ELEM_TYPE_IMAGE; }
-             else if (strncmp(trimmed, "Canvas {", 8) == 0) { current_element->type = ELEM_TYPE_CANVAS; }
-             else if (strncmp(trimmed, "Button {", 8) == 0) { current_element->type = ELEM_TYPE_BUTTON; }
-             else if (strncmp(trimmed, "Input {", 7) == 0) { current_element->type = ELEM_TYPE_INPUT; }
-             else if (strncmp(trimmed, "List {", 6) == 0) { current_element->type = ELEM_TYPE_LIST; }
-             else if (strncmp(trimmed, "Grid {", 6) == 0) { current_element->type = ELEM_TYPE_GRID; }
-             else if (strncmp(trimmed, "Scrollable {", 12) == 0) { current_element->type = ELEM_TYPE_SCROLLABLE; }
-             else { // Custom
-                 char custom_name[64]; if (sscanf(trimmed, "%63s {", custom_name) != 1) { fprintf(stderr, "Error line %d: Invalid element syntax: %s\n", line_num, trimmed); return 1; }
-                 fprintf(stderr, "Warning line %d: Custom element '%s' (Type 0x31+).\n", line_num, custom_name); current_element->type = 0x31; current_element->id_string_index = add_string(custom_name);
+        // Check for Element Definition: "ElementName {"
+        else if (isalpha((unsigned char)*trimmed) && strstr(trimmed, "{")) {
+             if (current_style) { // Cannot define element inside style
+                 fprintf(stderr, "Error line %d: Cannot define element inside a style block.\n", line_num);
+                 return 1;
+             }
+             if (g_element_count >= MAX_ELEMENTS) {
+                 fprintf(stderr, "Error line %d: Maximum element count (%d) exceeded.\n", line_num, MAX_ELEMENTS);
+                 return 1;
              }
 
-             if (parent) { if (parent->child_count >= MAX_CHILDREN) { fprintf(stderr, "Error line %d: Max children (%d) exceeded.\n", line_num, MAX_CHILDREN); return 1; } parent->children[parent->child_count++] = current_element; }
+             // Determine parent from stack
+             Element* parent = (element_stack_top >= 0) ? &g_elements[element_index_stack[element_stack_top]] : NULL;
+             // Initialize the new element entry
+             current_element = &g_elements[g_element_count];
+             memset(current_element, 0, sizeof(Element)); // CRITICAL: Zero out the struct, including header.layout
+             current_element->self_index = g_element_count;
+             current_element->parent_index = (parent) ? parent->self_index : -1;
+             current_element->calculated_size = 16; // Base header size, properties/etc added later
 
-             element_stack_top++; if(element_stack_top >= MAX_ELEMENTS) { fprintf(stderr, "Error line %d: Nesting depth exceeded (%d).\n", line_num, MAX_ELEMENTS); return 1; }
-             element_indent_stack[element_stack_top] = indent; element_index_stack[element_stack_top] = g_element_count;
-             g_element_count++; // Increment count *after* using it as index
-             current_indent = indent;
+             // Determine Element Type based on keyword
+             if (strncmp(trimmed, "App {", 5) == 0) {
+                 current_element->type = ELEM_TYPE_APP;
+                 if (g_has_app || parent) { // Only one App allowed, must be root
+                     fprintf(stderr, "Error line %d: Invalid App definition (must be single root).\n", line_num);
+                     return 1;
+                 }
+                 g_has_app = 1; g_header_flags |= FLAG_HAS_APP;
+             }
+             else if (strncmp(trimmed, "Container {", 11) == 0) { current_element->type = ELEM_TYPE_CONTAINER; }
+             else if (strncmp(trimmed, "Text {", 6) == 0)      { current_element->type = ELEM_TYPE_TEXT; }
+             else if (strncmp(trimmed, "Image {", 7) == 0)     { current_element->type = ELEM_TYPE_IMAGE; }
+             else if (strncmp(trimmed, "Canvas {", 8) == 0)    { current_element->type = ELEM_TYPE_CANVAS; }
+             else if (strncmp(trimmed, "Button {", 8) == 0)    { current_element->type = ELEM_TYPE_BUTTON; }
+             else if (strncmp(trimmed, "Input {", 7) == 0)     { current_element->type = ELEM_TYPE_INPUT; }
+             else if (strncmp(trimmed, "List {", 6) == 0)      { current_element->type = ELEM_TYPE_LIST; }
+             else if (strncmp(trimmed, "Grid {", 6) == 0)      { current_element->type = ELEM_TYPE_GRID; }
+             else if (strncmp(trimmed, "Scrollable {", 12) == 0){ current_element->type = ELEM_TYPE_SCROLLABLE; }
+             else { // Handle potential Custom Element
+                 char custom_name[64];
+                 if (sscanf(trimmed, "%63s {", custom_name) == 1) {
+                     // Consider assigning a specific range or a generic custom type ID
+                     current_element->type = 0x31; // Example: Start custom types here
+                     current_element->id_string_index = add_string(custom_name); // Store its name
+                     fprintf(stderr, "Info line %d: Detected custom element '%s' (Type 0x%02X).\n", line_num, custom_name, current_element->type);
+                 } else {
+                     fprintf(stderr, "Error line %d: Unrecognized element type or invalid syntax: %s\n", line_num, trimmed);
+                     return 1;
+                 }
+             }
+
+             // Link to parent if applicable
+             if (parent) {
+                 if (parent->child_count >= MAX_CHILDREN) {
+                     fprintf(stderr, "Error line %d: Maximum children (%d) exceeded for parent element %d.\n", line_num, MAX_CHILDREN, parent->self_index);
+                     return 1;
+                 }
+                 parent->children[parent->child_count++] = current_element;
+             }
+
+             // Push element onto stack
+             element_stack_top++;
+             if(element_stack_top >= MAX_ELEMENTS) {
+                 fprintf(stderr, "Error line %d: Maximum nesting depth (%d) exceeded.\n", line_num, MAX_ELEMENTS);
+                 return 1; // Avoid stack overflow
+             }
+             element_indent_stack[element_stack_top] = indent;
+             element_index_stack[element_stack_top] = g_element_count;
+
+             g_element_count++; // Increment *after* using current count as index
+             current_indent = indent; // Set expected indent for properties/children
         }
         // --- Property/Event Parsing Logic ---
+        // Check if the line is indented further than the current block start
         else if (indent > current_indent && (current_element != NULL || current_style != NULL)) {
 
-            // *** Determine Context and Target Pointers ***
+            // *** Determine Context (Style or Element) and Target Pointers ***
+            // These pointers will direct where the parsed property gets added.
             KrbProperty* target_props = NULL;
             uint8_t* target_prop_count = NULL;
             uint32_t* target_block_size = NULL;
-            uint8_t local_prop_count = 0;  // Local count variable
             bool is_style_context = false;
 
-            if (current_style != NULL) { // Style context MUST take precedence if active
+            if (current_style != NULL) { // Currently parsing inside a style block
                 target_props = current_style->properties;
-                target_prop_count = &current_style->property_count;
-                target_block_size = &current_style->calculated_size;
-                local_prop_count = current_style->property_count;  // Initialize local count
+                target_prop_count = &(current_style->property_count);  // FIXED: Use address of property_count
+                target_block_size = &(current_style->calculated_size); // FIXED: Use address of calculated_size
                 is_style_context = true;
-                
-                // Sanity check - element should be NULL in style context
+                // Sanity check: element should be NULL when style is active
                 if (current_element != NULL) {
-                    fprintf(stderr, "FATAL INTERNAL Error line %d: Both current_style and current_element are non-NULL in property parsing.\n", line_num);
-                    exit(EXIT_FAILURE);
+                    fprintf(stderr, "FATAL INTERNAL Error line %d: Both current_style and current_element are non-NULL during property parsing.\n", line_num);
+                    exit(EXIT_FAILURE); // Should not happen
                 }
-            } else if (current_element != NULL) { // Element context
+            } else if (current_element != NULL) { // Currently parsing inside an element block
                 target_props = current_element->properties;
-                target_prop_count = &current_element->property_count;
-                target_block_size = &current_element->calculated_size;
-                local_prop_count = current_element->property_count;  // Initialize local count
+                target_prop_count = &(current_element->property_count); // FIXED: Use address of property_count
+                target_block_size = &(current_element->calculated_size); // FIXED: Use address of calculated_size
                 is_style_context = false;
             } else {
-                // Should not be reached due to outer 'if', but for safety:
-                fprintf(stderr, "FATAL INTERNAL Error line %d: Property parsing entered but context is NULL.\n", line_num);
+                // Should not be reached if logic above is correct
+                fprintf(stderr, "FATAL INTERNAL Error line %d: Property parsing entered but no active context (style/element).\n", line_num);
                 exit(EXIT_FAILURE);
             }
 
-            // Explicit NULL checks before processing
-            if (target_props == NULL) {
-                fprintf(stderr, "FATAL: target_props is NULL at line %d\n", line_num);
-                return 1;
+            // Basic null check on resolved target pointers
+            if (target_props == NULL || target_prop_count == NULL || target_block_size == NULL) {
+                fprintf(stderr, "FATAL INTERNAL Error line %d: Target pointers for property storage are NULL.\n", line_num);
+                exit(EXIT_FAILURE); // Or return 1
             }
-            if (target_block_size == NULL) {
-                fprintf(stderr, "FATAL: target_block_size is NULL at line %d\n", line_num);
-                return 1;
-            }
-
-            // Explicit NULL checks before processing
-            if (target_props == NULL) {
-                fprintf(stderr, "FATAL: target_props is NULL at line %d\n", line_num);
-                return 1;
-            }
-            if (target_prop_count == NULL) {
-                fprintf(stderr, "FATAL: target_prop_count is NULL at line %d\n", line_num);
-                return 1;
-            }
-            if (target_block_size == NULL) {
-                fprintf(stderr, "FATAL: target_block_size is NULL at line %d\n", line_num);
-                return 1;
-            }
-
-
             // *** End Context Determination ***
 
-            // *** Basic Pointer Check (Redundant but safe) ***
-            // If we reached here, target pointers SHOULD be valid based on the logic above.
-            // The checks inside add_property_to_list will catch issues if somehow they aren't.
-            // We removed the explicit check here that was causing the confusing error.
-
-            // --- Now parse the 'key: value' line ---
+            // --- Parse the 'key: value' line ---
             char key[64], value_str[MAX_LINE_LENGTH - 64];
             if (sscanf(trimmed, "%63[^:]:%[^\n]", key, value_str) == 2) {
-
+                // Trim whitespace from key and value start
                 char* key_end = key + strlen(key) - 1; while (key_end >= key && isspace((unsigned char)*key_end)) *key_end-- = '\0';
                 char* val_start = value_str; while (*val_start && isspace((unsigned char)*val_start)) val_start++;
 
                 // --- Process Property/Event based on Key ---
-                // Use target_props, target_prop_count, target_block_size which are now guaranteed to point to the correct context (style or element)
+                // Properties/events are added to the 'target_*' context determined above.
 
-                // Element Header Fields (Guard with !is_style_context)
+                // == Element Header Fields (Only valid in Element context) ==
                  if (!is_style_context && strcmp(key, "id") == 0 ) { current_element->id_string_index = add_string(val_start); }
                  else if (!is_style_context && strcmp(key, "pos_x") == 0 ) { current_element->pos_x = (uint16_t)atoi(val_start); }
                  else if (!is_style_context && strcmp(key, "pos_y") == 0 ) { current_element->pos_y = (uint16_t)atoi(val_start); }
                  else if (!is_style_context && strcmp(key, "width") == 0 ) { current_element->width = (uint16_t)atoi(val_start); }
                  else if (!is_style_context && strcmp(key, "height") == 0 ) { current_element->height = (uint16_t)atoi(val_start); }
-                 else if (!is_style_context && strcmp(key, "style") == 0 ) { current_element->style_id = find_style_id_by_name(val_start); if(current_element->style_id == 0) { fprintf(stderr, "Warning line %d: Style '%s' not found.\n", line_num, val_start); } }
-                 else if (!is_style_context && strcmp(key, "layout") == 0 ) { uint8_t b=0; if (strstr(val_start,"col_rev")) b|=3; else if(strstr(val_start,"row_rev")) b|=2; else if(strstr(val_start,"col")) b|=1; if(strstr(val_start,"space")) b|=(3<<2); else if(strstr(val_start,"end")) b|=(2<<2); else if(strstr(val_start,"center")) b|=(1<<2); if(strstr(val_start,"wrap")) b|=LAYOUT_WRAP_BIT; if(strstr(val_start,"grow")) b|=LAYOUT_GROW_BIT; if(strstr(val_start,"abs")) b|=LAYOUT_ABSOLUTE_BIT; current_element->layout = b; }
+else if (!is_style_context && strcmp(key, "style") == 0 ) {
+    current_element->style_id = find_style_id_by_name(val_start);
+    if (current_element->style_id > 0) {
+        int style_idx = current_element->style_id - 1;
+        for (int j = 0; j < g_styles[style_idx].property_count; j++) {
+            KrbProperty* prop = &g_styles[style_idx].properties[j];
+            if (prop->property_id == PROP_ID_LAYOUT_FLAGS && prop->value_type == VAL_TYPE_BYTE && prop->size == 1) {
+                current_element->layout = *(uint8_t*)prop->value; // Apply layout from style to header
+                fprintf(stderr, "DEBUG: Applied layout 0x%02X from style %d to element %d\n",
+                        current_element->layout, style_idx, current_element->self_index);
+            }
+        }
+    }
+}
 
-                // Event Handling (Guard with !is_style_context)
-                 else if (!is_style_context && strcmp(key, "onClick") == 0 ) { if (current_element->event_count>=MAX_EVENTS) { fprintf(stderr,"Warn L%d: Max events\n",line_num);} else { uint8_t cb=add_string(val_start); current_element->events[current_element->event_count].event_type=EVENT_TYPE_CLICK; current_element->events[current_element->event_count].callback_id=cb; current_element->event_count++; } }
-                 // Add other events...
+                // == Layout Property (Valid in both Style and Element context) ==
+                else if (strcmp(key, "layout") == 0) {
+                    uint8_t b = 0; // The layout byte to calculate
+                    const char* layout_str = val_start;
+                    if (!layout_str) {
+                        fprintf(stderr, "Error line %d: Null or empty layout string encountered.\n", line_num);
+                        continue; // Skip this invalid property
+                    }
 
-                // Visual Properties (Apply in either context - use target_*)
-                 else if (strcmp(key, "background_color") == 0) { uint8_t c[4]; if(parse_color(val_start,c)){ add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BG_COLOR, VAL_TYPE_COLOR, 4, c); g_header_flags |= FLAG_EXTENDED_COLOR;} else fprintf(stderr,"Warn L%d: Bad bg color\n",line_num); }
-                 else if (strcmp(key, "foreground_color") == 0 || strcmp(key, "text_color") == 0) { uint8_t c[4]; if(parse_color(val_start,c)){ add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FG_COLOR, VAL_TYPE_COLOR, 4, c); g_header_flags |= FLAG_EXTENDED_COLOR;} else fprintf(stderr,"Warn L%d: Bad fg color\n",line_num); }
-                 else if (strcmp(key, "border_color") == 0) { uint8_t c[4]; if(parse_color(val_start,c)){ add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_COLOR, VAL_TYPE_COLOR, 4, c); g_header_flags |= FLAG_EXTENDED_COLOR;} else fprintf(stderr,"Warn L%d: Bad border color\n",line_num); }
-                 else if (strcmp(key, "border_width") == 0) { if(strchr(val_start,' ')){ uint8_t w[4]; if(sscanf(val_start,"%hhu%hhu%hhu%hhu",&w[0],&w[1],&w[2],&w[3])==4) add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_WIDTH, VAL_TYPE_EDGEINSETS, 4, w); else fprintf(stderr,"Warn L%d: Bad border widths\n",line_num);} else { uint8_t bw=(uint8_t)atoi(val_start); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_WIDTH, VAL_TYPE_BYTE, 1, &bw);}}
-                 // Add other shared visual props...
+                    // Parse Direction (Bits 0-1)
+                    if (strstr(layout_str, "col_rev")) { b |= 3; } // 11 = ColumnReverse
+                    else if (strstr(layout_str, "row_rev")) { b |= 2; } // 10 = RowReverse
+                    else if (strstr(layout_str, "col"))     { b |= 1; } // 01 = Column
+                    else { /* Default */                    b |= 0; } // 00 = Row
 
-                // Text Content (Guard with !is_style_context and type)
-                 else if (!is_style_context && (current_element->type == ELEM_TYPE_TEXT || current_element->type == ELEM_TYPE_BUTTON || current_element->type == ELEM_TYPE_INPUT) && strcmp(key, "text") == 0) { add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_TEXT_CONTENT, val_start); }
+                    // Parse Alignment (Bits 2-3)
+                    if (strstr(layout_str, "space_between")) { b |= (3 << 2); } // 11 = SpaceBetween
+                    else if (strstr(layout_str, "end"))      { b |= (2 << 2); } // 10 = End
+                    else if (strstr(layout_str, "center"))   { b |= (1 << 2); } // 01 = Center
+                    else { /* Default */                       b |= (0 << 2); } // 00 = Start
 
-                // Text Styling (Apply if !is_style_context+type OR is_style_context)
-                 else if ( (!is_style_context && (current_element->type == ELEM_TYPE_TEXT || current_element->type == ELEM_TYPE_BUTTON || current_element->type == ELEM_TYPE_INPUT)) || is_style_context ) {
-                     if (strcmp(key, "text_alignment") == 0) { uint8_t a=0; if(strstr(val_start,"cen")) a=1; else if(strstr(val_start,"rig")||strstr(val_start,"end")) a=2; add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_TEXT_ALIGNMENT, VAL_TYPE_ENUM, 1, &a); }
-                     else if (strcmp(key, "font_size") == 0) { uint16_t s=(uint16_t)atoi(val_start); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FONT_SIZE, VAL_TYPE_SHORT, 2, &s); }
-                     else if (strcmp(key, "font_weight") == 0) { uint16_t w=400; if(strstr(val_start,"bold")) w=700; add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FONT_WEIGHT, VAL_TYPE_SHORT, 2, &w); }
-                     else { goto check_other_properties; } // Fall through if not a text style prop
+                    // Parse Optional Flags
+                    if (strstr(layout_str, "wrap"))     { b |= LAYOUT_WRAP_BIT; }     // Bit 4
+                    if (strstr(layout_str, "grow"))     { b |= LAYOUT_GROW_BIT; }     // Bit 5
+                    if (strstr(layout_str, "absolute")) { b |= LAYOUT_ABSOLUTE_BIT; } // Bit 6
+
+                    // Add the calculated byte 'b' as a PROPERTY to the current context
+                    add_property_to_list(target_props, target_prop_count, target_block_size,
+                                         PROP_ID_LAYOUT_FLAGS, VAL_TYPE_BYTE, 1, &b);
+
+                    // --- DEBUG PRINT ---
+                    fprintf(stderr, "DEBUG Compiler L%d: Added PROP_ID_LAYOUT_FLAGS (0x%02X) with value 0x%02X to %s context.\n",
+                            line_num, PROP_ID_LAYOUT_FLAGS, b, is_style_context ? "Style" : "Element");
+                    // --- END DEBUG PRINT ---
+                }
+
+                // == Event Handling (Only valid in Element context) ==
+                 else if (!is_style_context && strcmp(key, "onClick") == 0 ) {
+                     if (current_element->event_count < MAX_EVENTS) {
+                         uint8_t callback_index = add_string(val_start); // Get string index for callback name
+                         current_element->events[current_element->event_count].event_type = EVENT_TYPE_CLICK;
+                         current_element->events[current_element->event_count].callback_id = callback_index;
+                         current_element->event_count++;
+                         // Size for events is added at the end of the element block ('}')
+                     } else {
+                         fprintf(stderr,"Warning line %d: Maximum event count (%d) reached for element %d.\n", line_num, MAX_EVENTS, current_element->self_index);
+                     }
                  }
-                 else {
-                 check_other_properties: // Label for fallthrough
+                 // Add other event handlers (onPress, onHover, etc.) here...
 
-                    // Image Source (Guard with !is_style_context and type)
-                     if (!is_style_context && current_element->type == ELEM_TYPE_IMAGE && strcmp(key, "source") == 0) { add_resource_path_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_IMAGE_SOURCE, val_start); }
+                // == Visual Properties (Valid in both Style and Element context) ==
+                 else if (strcmp(key, "background_color") == 0) {
+                     uint8_t c[4]; // RGBA
+                     if(parse_color(val_start, c)) {
+                         add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BG_COLOR, VAL_TYPE_COLOR, 4, c);
+                         g_header_flags |= FLAG_EXTENDED_COLOR; // Mark that RGBA is used
+                     } else {
+                         fprintf(stderr,"Warning line %d: Invalid background_color format: '%s'. Expected #RRGGBB or #RRGGBBAA.\n", line_num, val_start);
+                     }
+                 }
+                 else if (strcmp(key, "foreground_color") == 0 || strcmp(key, "text_color") == 0) {
+                      uint8_t c[4];
+                     if(parse_color(val_start, c)) {
+                         add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FG_COLOR, VAL_TYPE_COLOR, 4, c);
+                         g_header_flags |= FLAG_EXTENDED_COLOR;
+                     } else {
+                         fprintf(stderr,"Warning line %d: Invalid foreground_color/text_color format: '%s'.\n", line_num, val_start);
+                     }
+                 }
+                 else if (strcmp(key, "border_color") == 0) {
+                     uint8_t c[4];
+                     if(parse_color(val_start, c)) {
+                         add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_COLOR, VAL_TYPE_COLOR, 4, c);
+                         g_header_flags |= FLAG_EXTENDED_COLOR;
+                     } else {
+                         fprintf(stderr,"Warning line %d: Invalid border_color format: '%s'.\n", line_num, val_start);
+                     }
+                 }
+                 else if (strcmp(key, "border_width") == 0) {
+                     // Check if it contains spaces, indicating multiple values (EdgeInsets)
+                     if(strchr(val_start,' ')) {
+                         uint8_t widths[4]; // top, right, bottom, left
+                         if(sscanf(val_start,"%hhu %hhu %hhu %hhu", &widths[0], &widths[1], &widths[2], &widths[3]) == 4) {
+                             add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_WIDTH, VAL_TYPE_EDGEINSETS, 4, widths);
+                         } else {
+                             fprintf(stderr,"Warning line %d: Invalid border_width format for EdgeInsets (expected 4 numbers): '%s'.\n", line_num, val_start);
+                         }
+                     } else { // Single value (uniform width)
+                         uint8_t width = (uint8_t)atoi(val_start);
+                         add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_WIDTH, VAL_TYPE_BYTE, 1, &width);
+                     }
+                 }
+                 // Add other shared visual properties (padding, margin, border_radius, opacity, etc.)...
 
-                    // App Specific (Guard with !is_style_context and type)
+                // == Text Content (Only valid in specific Element types) ==
+                 else if (!is_style_context && (current_element->type == ELEM_TYPE_TEXT || current_element->type == ELEM_TYPE_BUTTON || current_element->type == ELEM_TYPE_INPUT) && strcmp(key, "text") == 0) {
+                     add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_TEXT_CONTENT, val_start);
+                 }
+
+                // == Text Styling Properties (Valid in specific Element types OR Style context) ==
+                 else if ( (!is_style_context && (current_element->type == ELEM_TYPE_TEXT || current_element->type == ELEM_TYPE_BUTTON || current_element->type == ELEM_TYPE_INPUT)) || is_style_context ) {
+                     if (strcmp(key, "text_alignment") == 0) {
+                         uint8_t alignment_enum = 0; // Default: Start/Left
+                         if(strstr(val_start,"cen"))      alignment_enum = 1; // Center
+                         else if(strstr(val_start,"rig") || strstr(val_start,"end")) alignment_enum = 2; // End/Right
+                         add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_TEXT_ALIGNMENT, VAL_TYPE_ENUM, 1, &alignment_enum);
+                     }
+                     else if (strcmp(key, "font_size") == 0) {
+                         uint16_t size = (uint16_t)atoi(val_start);
+                         add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FONT_SIZE, VAL_TYPE_SHORT, 2, &size);
+                     }
+                     else if (strcmp(key, "font_weight") == 0) {
+                         // Simple check for now, could parse numbers (100-900)
+                         uint16_t weight = 400; // Default: Normal
+                         if(strstr(val_start,"bold")) weight = 700; // Bold
+                         // Could add checks for "light", "medium", etc.
+                         add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FONT_WEIGHT, VAL_TYPE_SHORT, 2, &weight);
+                     }
+                     else {
+                         // If the key didn't match any text styling props, fall through
+                         goto check_other_properties;
+                     }
+                 }
+                 else { // Fallthrough point if not a text-style prop OR wrong element type
+                 check_other_properties:
+
+                    // == Image Source (Only valid for Image Element type) ==
+                     if (!is_style_context && current_element->type == ELEM_TYPE_IMAGE && strcmp(key, "source") == 0) {
+                         // Assuming source is a path string for now
+                         add_resource_path_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_IMAGE_SOURCE, val_start);
+                         // Need resource handling logic if FLAG_HAS_RESOURCES is intended
+                     }
+
+                    // == App Specific Properties (Only valid for App Element type) ==
                      else if (!is_style_context && current_element->type == ELEM_TYPE_APP) {
                          if (strcmp(key, "window_width") == 0) { uint16_t v=(uint16_t)atoi(val_start); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_WINDOW_WIDTH, VAL_TYPE_SHORT, 2, &v); }
                          else if (strcmp(key, "window_height") == 0) { uint16_t v=(uint16_t)atoi(val_start); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_WINDOW_HEIGHT, VAL_TYPE_SHORT, 2, &v); }
                          else if (strcmp(key, "window_title") == 0) { add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_WINDOW_TITLE, val_start); }
                          else if (strcmp(key, "resizable") == 0) { uint8_t v=(strstr(val_start,"true")!=NULL); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_RESIZABLE, VAL_TYPE_BYTE, 1, &v); }
                          else if (strcmp(key, "keep_aspect") == 0) { uint8_t v=(strstr(val_start,"true")!=NULL); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_KEEP_ASPECT, VAL_TYPE_BYTE, 1, &v); }
-                         else if (strcmp(key, "scale_factor") == 0) { float s=atof(val_start); uint16_t fp=(uint16_t)(s*256.0f+0.5f); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_SCALE_FACTOR, VAL_TYPE_PERCENTAGE, 2, &fp); g_header_flags |= FLAG_FIXED_POINT; }
+                         else if (strcmp(key, "scale_factor") == 0) {
+                             float s=atof(val_start);
+                             uint16_t fixed_point = (uint16_t)(s * 256.0f + 0.5f); // Convert float to 8.8 fixed-point
+                             add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_SCALE_FACTOR, VAL_TYPE_PERCENTAGE, 2, &fixed_point);
+                             g_header_flags |= FLAG_FIXED_POINT; // Mark that fixed-point is used
+                          }
                          else if (strcmp(key, "icon") == 0) { add_resource_path_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_ICON, val_start); }
                          else if (strcmp(key, "version") == 0) { add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_VERSION, val_start); }
                          else if (strcmp(key, "author") == 0) { add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_AUTHOR, val_start); }
-                         else { fprintf(stderr, "Warning line %d: Unhandled App property '%s'.\n", line_num, key); }
+                         else {
+                             fprintf(stderr, "Warning line %d: Unhandled App-specific property '%s'.\n", line_num, key);
+                         }
                      }
-                    // Final Catch-all
-                     else { fprintf(stderr, "Warning line %d: Unhandled property '%s' in %s context.\n", line_num, key, is_style_context ? "Style" : "Element"); }
-                 } // End main property chain
+                    // == Final Catch-all for Unhandled Properties ==
+                     else {
+                         fprintf(stderr, "Warning line %d: Unhandled property '%s' encountered in %s context.\n",
+                                 line_num, key, is_style_context ? "Style" : "Element");
+                     }
+                 } // End main property chain `if/else if`
 
-            } else { // sscanf failed
-                 fprintf(stderr, "Error line %d: Invalid property syntax (missing ':'?): %s\n", line_num, trimmed); return 1;
+            } else { // sscanf failed to find "key: value" format
+                 fprintf(stderr, "Error line %d: Invalid property syntax (expected 'key: value'): '%s'\n", line_num, trimmed);
+                 return 1; // Syntax error
             }
-        } else if (trimmed[0] != '\0') { // Unexpected syntax/indent
-             fprintf(stderr, "Error line %d: Unexpected syntax or indentation: '%s' (Indent %d vs Current %d)\n", line_num, trimmed, indent, current_indent); return 1;
+        } else if (trimmed[0] != '\0') { // Line is not empty, not a comment, not start/end block, not property...
+             // Indicates unexpected syntax or incorrect indentation level
+             fprintf(stderr, "Error line %d: Unexpected syntax or incorrect indentation: '%s' (Indent %d vs Expected %d)\n",
+                     line_num, trimmed, indent, current_indent);
+             return 1; // Parsing failed
         }
-    } // End while fgets
+    } // End while loop (reading lines)
 
     // --- End of File Checks ---
-    if (element_stack_top != -1) { fprintf(stderr, "Error: Unclosed element block.\n"); return 1; }
-    if (current_style) { fprintf(stderr, "Error: Unclosed style block.\n"); return 1; }
-    if (g_has_app && g_element_count > 0 && g_elements[0].type != ELEM_TYPE_APP) { fprintf(stderr, "Internal Error: App element not first.\n"); return 1; }
+    if (element_stack_top != -1) {
+        fprintf(stderr, "Error: Reached end of file with unclosed element block(s). Last element index on stack: %d\n", element_index_stack[element_stack_top]);
+        return 1;
+    }
+    if (current_style) {
+        fprintf(stderr, "Error: Reached end of file with unclosed style block.\n");
+        return 1;
+    }
+    // Check if App element is correctly placed if present
+    if (g_has_app && g_element_count > 0 && g_elements[0].type != ELEM_TYPE_APP) {
+        fprintf(stderr, "Internal Compiler Error: App element was defined but is not the first element (Index 0).\n");
+        return 1;
+    }
 
-    return 0; // Success
+    // If we reach here, parsing was successful
+    return 0;
 }
 
 // --- Pass 2: Writing the KRB File ---
