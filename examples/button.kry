@@ -1,0 +1,27 @@
+style "base" {
+    background_color: #191919FF
+    text_color: #FFFF00FF 
+    border_color: #00FFFFFF 
+    border_width: 1
+}
+
+App {
+    window_width: 600
+    window_height: 400
+    window_title: "Centered Button"
+    resizable: true
+    keep_aspect: false 
+    layout: center
+    style: "base"
+
+    Button {
+        width: 150
+        height: 50
+
+        text: "Click Me!"
+        text_alignment: center
+        background_color: #404080FF
+
+        onClick: "handleButtonClick"
+    }
+}
