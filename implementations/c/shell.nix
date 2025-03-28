@@ -11,6 +11,7 @@ pkgs.mkShell {
     SDL2_ttf      # SDL2_ttf for text rendering
     raylib        # Raylib library
     termbox       # Termbox for terminal rendering (replacing notcurses)
+    pkg-config
   ];
 
   # Shell hook to set up environment variables
@@ -19,7 +20,7 @@ pkgs.mkShell {
     export LIBRARY_PATH="${pkgs.SDL2}/lib:${pkgs.SDL2_ttf}/lib:${pkgs.raylib}/lib:${pkgs.termbox}/lib:$LIBRARY_PATH"
     export LD_LIBRARY_PATH="${pkgs.SDL2}/lib:${pkgs.SDL2_ttf}/lib:${pkgs.raylib}/lib:${pkgs.termbox}/lib:$LD_LIBRARY_PATH"
     echo "Kryon C development environment loaded."
-    echo "Available renderers: sdl, raylib, term (using termbox)"
+    echo "Available renderers: raylib, term (using termbox)"
     echo "Run 'make term' to build the termbox terminal renderer."
   '';
 }

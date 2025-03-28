@@ -169,13 +169,10 @@ typedef struct {
     KrbProperty* properties; // Dynamically allocated array of KrbProperty for this style
 } KrbStyle;
 
-// Structure to hold event info if the reader is modified to parse it
-// (Not strictly necessary for the current hover fix, but good for future use)
-// typedef struct {
-//    uint8_t event_type;    // Uses EVENT_TYPE_* constants
-//    uint8_t callback_id;   // String table index for callback name
-// } KrbEventInfo;
-
+typedef struct {
+    uint8_t event_type;    // EVENT_TYPE_CLICK, etc.
+    uint8_t callback_id;   // String table index for callback name ("handleButtonClick")
+} KrbEvent;
 
 // Represents the entire parsed KRB document data in memory
 typedef struct {
@@ -195,8 +192,9 @@ typedef struct {
     // Array of pointers to null-terminated strings read from the file
     char** strings;
 
-    // TODO: Add fields for events, animations, resources if implemented
-    // KrbEventInfo** events; // Example if events were read
+    KrbEvent** events;
+    // TODO: Add fields for animations, resources if implemented
+
     // KrbAnimation* animations;
     // KrbResource* resources;
 
