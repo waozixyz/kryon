@@ -22,6 +22,23 @@
 #define FLAG_HAS_APP        (1 << 6) // Indicates App element is present as element 0
 // Bits 7-15 Reserved
 
+// Element Types (Matching Specification)
+#define ELEM_TYPE_APP         0x00 // Application root element
+#define ELEM_TYPE_CONTAINER   0x01 // div-like, generic container
+#define ELEM_TYPE_TEXT        0x02 // span/p-like, text content
+#define ELEM_TYPE_IMAGE       0x03 // image display
+#define ELEM_TYPE_CANVAS      0x04 // raw drawing surface
+// 0x05-0x0F Reserved for future core elements
+#define ELEM_TYPE_BUTTON      0x10 // clickable element
+#define ELEM_TYPE_INPUT       0x11 // text input field
+// 0x12-0x1F Reserved for future interactive elements
+#define ELEM_TYPE_LIST        0x20 // vertical/horizontal list
+#define ELEM_TYPE_GRID        0x21 // table-like layout
+#define ELEM_TYPE_SCROLLABLE  0x22 // scrollable container
+// 0x23-0x2F Reserved for future structural elements
+#define ELEM_TYPE_VIDEO       0x30 // video playback element
+// 0x31-0xFF Custom/Specialized elements
+
 // Property IDs (Matching Specification)
 #define PROP_ID_INVALID         0x00
 #define PROP_ID_BG_COLOR        0x01
@@ -76,6 +93,20 @@
 #define VAL_TYPE_CUSTOM     0x0B // Depends on context
 // 0x0C - 0xFF Reserved
 
+// Event Types (Matching Specification)
+#define EVENT_TYPE_NONE     0x00
+#define EVENT_TYPE_CLICK    0x01
+#define EVENT_TYPE_PRESS    0x02
+#define EVENT_TYPE_RELEASE  0x03
+#define EVENT_TYPE_LONGPRESS 0x04
+#define EVENT_TYPE_HOVER    0x05
+#define EVENT_TYPE_FOCUS    0x06
+#define EVENT_TYPE_BLUR     0x07
+#define EVENT_TYPE_CHANGE   0x08
+#define EVENT_TYPE_SUBMIT   0x09
+#define EVENT_TYPE_CUSTOM   0x0A // Uses a string table reference
+// 0x0B-0xFF Reserved
+
 // Layout Byte Bits (Matching Specification)
 #define LAYOUT_DIRECTION_MASK 0x03 // Bits 0-1: 00=Row, 01=Col, 10=RowRev, 11=ColRev
 #define LAYOUT_ALIGNMENT_MASK 0x0C // Bits 2-3: 00=Start, 01=Center, 10=End, 11=SpaceBetween
@@ -107,7 +138,7 @@ typedef struct {
 } KrbHeader;
 
 typedef struct {
-    uint8_t type;            // Element type (e.g., 0x00=App, 0x01=Container, 0x02=Text)
+    uint8_t type;            // Element type (using ELEM_TYPE_* constants)
     uint8_t id;              // String table index or 0 (For Element ID name)
     uint16_t pos_x;
     uint16_t pos_y;
@@ -138,6 +169,14 @@ typedef struct {
     KrbProperty* properties; // Dynamically allocated array of KrbProperty for this style
 } KrbStyle;
 
+// Structure to hold event info if the reader is modified to parse it
+// (Not strictly necessary for the current hover fix, but good for future use)
+// typedef struct {
+//    uint8_t event_type;    // Uses EVENT_TYPE_* constants
+//    uint8_t callback_id;   // String table index for callback name
+// } KrbEventInfo;
+
+
 // Represents the entire parsed KRB document data in memory
 typedef struct {
     KrbHeader header;
@@ -156,7 +195,8 @@ typedef struct {
     // Array of pointers to null-terminated strings read from the file
     char** strings;
 
-    // TODO: Add fields for animations, resources if implemented
+    // TODO: Add fields for events, animations, resources if implemented
+    // KrbEventInfo** events; // Example if events were read
     // KrbAnimation* animations;
     // KrbResource* resources;
 

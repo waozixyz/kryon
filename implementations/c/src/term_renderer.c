@@ -276,7 +276,7 @@ void render_element(RenderElement* el,
     int content_x=final_x+left_bw; int content_y=final_y+top_bw; int content_width=final_w-left_bw-right_bw; int content_height=final_h-top_bw-bottom_bw; if(content_width<0)content_width=0; if(content_height<0)content_height=0;
 
     // --- 8. Draw Content (Text) --- (Unchanged logic, uses resolved tb_fg, tb_bg)
-    if(el->header.type==0x02&&el->text&&content_width>0&&content_height>0){
+    if(el->text && el->text[0] != '\0' && content_width > 0 && content_height > 0){
         int text_len=strlen(el->text); int text_draw_x=content_x; if(el->text_alignment==1)text_draw_x=content_x+(content_width-text_len)/2;else if(el->text_alignment==2)text_draw_x=content_x+content_width-text_len; if(text_draw_x<content_x)text_draw_x=content_x;if(text_draw_x>=content_x+content_width&&text_len>0)text_draw_x=content_x+content_width-1; int text_draw_y=content_y+(content_height-1)/2; if(text_draw_y<content_y)text_draw_y=content_y;if(text_draw_y>=content_y+content_height)text_draw_y=content_y+content_height-1;
         for(int i=0;i<text_len;++i){
             int char_x=text_draw_x+i;
