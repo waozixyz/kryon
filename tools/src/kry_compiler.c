@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <errno.h> // For error reporting
+#include <stdbool.h> // For bool type
 
 // --- Constants based on Specification ---
 #define KRB_MAGIC "KRB1"
@@ -19,6 +20,22 @@
 #define FLAG_EXTENDED_COLOR (1 << 5) // Indicate usage (RGBA vs Palette)
 #define FLAG_HAS_APP        (1 << 6)
 // Bits 7-15 Reserved
+
+// Element Types (Matching Specification)
+#define ELEM_TYPE_APP         0x00
+#define ELEM_TYPE_CONTAINER   0x01
+#define ELEM_TYPE_TEXT        0x02
+#define ELEM_TYPE_IMAGE       0x03
+#define ELEM_TYPE_CANVAS      0x04
+// 0x05-0x0F Reserved
+#define ELEM_TYPE_BUTTON      0x10
+#define ELEM_TYPE_INPUT       0x11
+// 0x12-0x1F Reserved
+#define ELEM_TYPE_LIST        0x20
+#define ELEM_TYPE_GRID        0x21
+#define ELEM_TYPE_SCROLLABLE  0x22
+// 0x23-0x2F Reserved
+// 0x30-0xFF Specialized/Custom
 
 // Property IDs (Matching Specification)
 #define PROP_ID_INVALID         0x00
@@ -74,6 +91,13 @@
 #define VAL_TYPE_CUSTOM     0x0B // Depends on context
 // 0x0C - 0xFF Reserved
 
+// Event Types (Matching Specification)
+#define EVENT_TYPE_NONE     0x00
+#define EVENT_TYPE_CLICK    0x01
+#define EVENT_TYPE_PRESS    0x02
+#define EVENT_TYPE_RELEASE  0x03
+// ... add others as needed
+
 // Layout Byte Bits (Matching Specification)
 #define LAYOUT_DIRECTION_MASK 0x03 // Bits 0-1: 00=Row, 01=Col, 10=RowRev, 11=ColRev
 #define LAYOUT_ALIGNMENT_MASK 0x0C // Bits 2-3: 00=Start, 01=Center, 10=End, 11=SpaceBetween
@@ -88,6 +112,8 @@
 #define MAX_PROPERTIES 64       // Increased limit per element/style
 #define MAX_STYLES 64           // Limit for defined styles
 #define MAX_CHILDREN 128        // Limit for children per element
+#define MAX_EVENTS 16           // Limit for events per element
+#define MAX_ANIM_REFS 16        // Limit for animation refs per element
 #define MAX_LINE_LENGTH 512     // Increased line buffer size
 #define MAX_ANIMATIONS 64       // Placeholder
 #define MAX_RESOURCES 64        // Placeholder
@@ -101,6 +127,11 @@ typedef struct {
     void* value;            // Pointer to dynamically allocated value data
 } KrbProperty;
 
+typedef struct {
+    uint8_t event_type;
+    uint8_t callback_id; // String table index
+} KrbEvent;
+
 typedef struct Element {
     // Header Data to be written
     uint8_t type;
@@ -113,12 +144,12 @@ typedef struct Element {
     uint8_t style_id;       // 1-based index into style array (0 = none)
     uint8_t property_count;
     uint8_t child_count;
-    uint8_t event_count;    // Not implemented in parsing yet
-    uint8_t animation_count;// Not implemented in parsing yet
+    uint8_t event_count;    // Number of event references
+    uint8_t animation_count;// Number of animation references
 
     // Compiler-Internal Data
     KrbProperty properties[MAX_PROPERTIES];
-    // TODO: Add Event structures
+    KrbEvent events[MAX_EVENTS];
     // TODO: Add Animation reference structures
     struct Element* children[MAX_CHILDREN];
     int parent_index;       // Index in the global elements array, -1 for root/App
@@ -185,10 +216,8 @@ void write_u32(FILE* file, uint32_t value) {
         perror("Error writing u32"); exit(EXIT_FAILURE);
     }
 }
-
-// Safely adds a string to the global table, handles duplicates, trims. Returns index.
 uint8_t add_string(const char* text) {
-    if (!text) return 0; // Consider if index 0 should be reserved for "invalid"
+    if (!text) return 0; // Index 0 could be reserved for "" or invalid
 
     // 1. Trim leading/trailing whitespace
     const char *start = text;
@@ -197,24 +226,26 @@ uint8_t add_string(const char* text) {
     while (end >= start && isspace((unsigned char)*end)) end--;
 
     // 2. Handle quotes (only if they are the very first and last non-whitespace chars)
+    int quoted = 0;
     if (end >= start && *start == '"' && *end == '"') {
         start++;
         end--;
+        quoted = 1;
     }
 
     // 3. Calculate length and create a temporary buffer for the cleaned string
     size_t len = (end < start) ? 0 : (end - start + 1);
-    char clean_text_buf[MAX_LINE_LENGTH]; // Use stack buffer for temporary cleaned string
+    char clean_text_buf[MAX_LINE_LENGTH];
     if (len >= sizeof(clean_text_buf)) {
-         fprintf(stderr, "Error: Cleaned string too long: %zu chars\n", len);
-         exit(EXIT_FAILURE);
+        fprintf(stderr, "Error: Cleaned string too long: %zu chars\n", len);
+        exit(EXIT_FAILURE);
     }
     strncpy(clean_text_buf, start, len);
     clean_text_buf[len] = '\0';
 
     // 4. Check for duplicates
     for (int i = 0; i < g_string_count; i++) {
-        if (strcmp(g_strings[i].text, clean_text_buf) == 0) {
+        if (g_strings[i].text && strcmp(g_strings[i].text, clean_text_buf) == 0) {
             return g_strings[i].index; // Return existing index
         }
     }
@@ -225,42 +256,36 @@ uint8_t add_string(const char* text) {
         exit(EXIT_FAILURE);
     }
 
-    g_strings[g_string_count].text = strdup(clean_text_buf); // Allocate permanent storage
+    // Allocate memory for the string
+    g_strings[g_string_count].text = strdup(clean_text_buf);
     if (!g_strings[g_string_count].text) {
         perror("Failed to duplicate cleaned string");
         exit(EXIT_FAILURE);
     }
+
     g_strings[g_string_count].length = len;
     g_strings[g_string_count].index = g_string_count;
+    
     return g_string_count++;
 }
-
 // Finds style index by name (returns 0 if not found)
 uint8_t find_style_id_by_name(const char* name) {
     if (!name) return 0;
 
-    // Don't add the style name to the main string table here,
-    // it's added when the style itself is parsed. Just search.
-    // Trim the input name for searching consistency.
     const char *start = name;
     const char *end = name + strlen(name) - 1;
     while (start <= end && isspace((unsigned char)*start)) start++;
     while (end >= start && isspace((unsigned char)*end)) end--;
-    if (end >= start && *start == '"' && *end == '"') {
-        start++; end--;
-    }
+    if (end >= start && *start == '"' && *end == '"') { start++; end--; }
     size_t len = (end < start) ? 0 : (end - start + 1);
     char clean_name_buf[MAX_LINE_LENGTH];
-     if (len >= sizeof(clean_name_buf)) {
-         fprintf(stderr, "Error: Style name too long for search buffer: %zu chars\n", len);
-         exit(EXIT_FAILURE);
-    }
-    strncpy(clean_name_buf, start, len);
-    clean_name_buf[len] = '\0';
+     if (len >= sizeof(clean_name_buf)) { fprintf(stderr, "Error: Style name too long for search buffer: %zu chars\n", len); exit(EXIT_FAILURE); }
+    strncpy(clean_name_buf, start, len); clean_name_buf[len] = '\0';
 
     for (int i = 0; i < g_style_count; i++) {
-        // Compare against the string table entry pointed to by the style's name_index
-        if (strcmp(g_strings[g_styles[i].name_index].text, clean_name_buf) == 0) {
+        if (g_styles[i].name_index < g_string_count && // Bounds check
+            g_strings[g_styles[i].name_index].text && // Ensure string text is valid
+            strcmp(g_strings[g_styles[i].name_index].text, clean_name_buf) == 0) {
             return g_styles[i].id; // Return 1-based ID
         }
     }
@@ -273,7 +298,7 @@ void cleanup_resources() {
         for (int j = 0; j < g_elements[i].property_count; j++) {
             if (g_elements[i].properties[j].value) {
                 free(g_elements[i].properties[j].value);
-                g_elements[i].properties[j].value = NULL; // Avoid double free
+                g_elements[i].properties[j].value = NULL;
             }
         }
     }
@@ -282,7 +307,7 @@ void cleanup_resources() {
         for (int j = 0; j < g_styles[i].property_count; j++) {
             if (g_styles[i].properties[j].value) {
                 free(g_styles[i].properties[j].value);
-                g_styles[i].properties[j].value = NULL; // Avoid double free
+                g_styles[i].properties[j].value = NULL;
             }
         }
     }
@@ -290,424 +315,339 @@ void cleanup_resources() {
     for (int i = 0; i < g_string_count; i++) {
          if (g_strings[i].text) {
             free(g_strings[i].text);
-            g_strings[i].text = NULL; // Avoid double free
+            g_strings[i].text = NULL;
         }
     }
-    // TODO: Free animation data
-    // TODO: Free resource data
-
-    // Reset global counts/flags for potential reuse (though main exits)
-    g_element_count = 0;
-    g_string_count = 0;
-    g_style_count = 0;
-    g_animation_count = 0;
-    g_resource_count = 0;
-    g_has_app = 0;
-    g_header_flags = 0;
+    // Reset counts
+    g_element_count = 0; g_string_count = 0; g_style_count = 0;
+    g_animation_count = 0; g_resource_count = 0; g_has_app = 0; g_header_flags = 0;
 }
 
 // Helper to parse color strings like #RRGGBB or #RRGGBBAA -> outputs RGBA
 int parse_color(const char* value_str, uint8_t color_out[4]) {
-    color_out[3] = 255; // Default alpha
-    if (sscanf(value_str, "#%2hhx%2hhx%2hhx%2hhx", &color_out[0], &color_out[1], &color_out[2], &color_out[3]) == 4) return 1;
-    if (sscanf(value_str, "#%2hhx%2hhx%2hhx", &color_out[0], &color_out[1], &color_out[2]) == 3) return 1;
-    // Allow common color names? Maybe later.
-    // Allow rgb()/rgba() syntax? Maybe later.
-    return 0; // Failed parse
+    color_out[0] = 0; color_out[1] = 0; color_out[2] = 0; color_out[3] = 255;
+    if (!value_str) return 0;
+    const char* p = value_str; while(isspace((unsigned char)*p)) p++;
+    if (*p != '#') return 0; p++;
+    int len = strlen(p); char* end = (char*)p + len -1; while(end >= p && isspace((unsigned char)*end)) *end-- = '\0'; len = strlen(p);
+    if (len == 8 && sscanf(p, "%2hhx%2hhx%2hhx%2hhx", &color_out[0], &color_out[1], &color_out[2], &color_out[3]) == 4) return 1;
+    if (len == 6 && sscanf(p, "%2hhx%2hhx%2hhx", &color_out[0], &color_out[1], &color_out[2]) == 3) return 1;
+    return 0;
 }
+void add_property_to_list(KrbProperty* prop_array, uint8_t* prop_count, uint32_t* current_size, 
+                           uint8_t prop_id, uint8_t val_type, uint8_t size, const void* data) {
+    // Explicit NULL checks with detailed error reporting
+    if (!prop_array) {
+        fprintf(stderr, "FATAL: prop_array is NULL in add_property_to_list\n");
+        fprintf(stderr, "Parameters: prop_id=%u, val_type=%u, size=%u\n", prop_id, val_type, size);
+        exit(EXIT_FAILURE);
+    }
+    if (!prop_count) {
+        fprintf(stderr, "FATAL: prop_count is NULL in add_property_to_list\n");
+        fprintf(stderr, "Parameters: prop_id=%u, val_type=%u, size=%u\n", prop_id, val_type, size);
+        exit(EXIT_FAILURE);
+    }
+    if (!current_size) {
+        fprintf(stderr, "FATAL: current_size is NULL in add_property_to_list\n");
+        fprintf(stderr, "Parameters: prop_id=%u, val_type=%u, size=%u\n", prop_id, val_type, size);
+        exit(EXIT_FAILURE);
+    }
 
-// Helper to add a property and update the calculated size
-void add_property_to_list(KrbProperty* prop_array, uint8_t* count, uint32_t* current_size, uint8_t prop_id, uint8_t val_type, uint8_t size, const void* data) {
-    if (!prop_array || !count || !current_size || !data) {
-        fprintf(stderr, "Internal Error: Null pointer passed to add_property_to_list.\n");
+    // Check maximum properties
+    if (*prop_count >= MAX_PROPERTIES) {
+        fprintf(stderr, "Error: Maximum property count (%d) exceeded.\n", MAX_PROPERTIES);
         exit(EXIT_FAILURE);
     }
-    if (*count >= MAX_PROPERTIES) {
-        fprintf(stderr, "Error: Maximum property count (%d) exceeded for element/style.\n", MAX_PROPERTIES);
-        exit(EXIT_FAILURE);
-    }
-    KrbProperty* p = &prop_array[*count];
+
+    // Get pointer to current property
+    KrbProperty* p = &prop_array[*prop_count];
+    
+    // Set property details
     p->property_id = prop_id;
     p->value_type = val_type;
     p->size = size;
-    p->value = malloc(size);
-    if (!p->value) {
-        perror("Failed to allocate property value");
+
+    // Allocate and copy value if size > 0
+    if (size > 0) {
+        if (!data) {
+            fprintf(stderr, "FATAL: Null data pointer passed to add_property_to_list with size > 0 (Prop ID: %u)\n", prop_id);
+            exit(EXIT_FAILURE);
+        }
+        p->value = malloc(size);
+        if (!p->value) {
+            perror("Failed to allocate property value");
+            exit(EXIT_FAILURE);
+        }
+        memcpy(p->value, data, size);
+    } else {
+        p->value = NULL;
+    }
+
+    // Update size and count
+    *current_size += 1 + 1 + 1 + size; // PropID + Type + Size + ValueSize
+    (*prop_count)++;
+}
+
+// Convenience wrapper for string properties (Value is 1-byte index)
+void add_string_property_to_list(KrbProperty* prop_array, uint8_t* prop_count, uint32_t* current_size, 
+                                  uint8_t prop_id, const char* value_str) {
+    // Explicit NULL checks
+    if (!prop_array || !prop_count || !current_size) {
+        fprintf(stderr, "FATAL: Null pointer in add_string_property_to_list\n");
+        fprintf(stderr, "prop_array: %p, prop_count: %p, current_size: %p\n", 
+                (void*)prop_array, (void*)prop_count, (void*)current_size);
         exit(EXIT_FAILURE);
     }
-    memcpy(p->value, data, size);
+    
+    uint8_t str_index = add_string(value_str);
+    add_property_to_list(prop_array, prop_count, current_size, prop_id, VAL_TYPE_STRING, 1, &str_index);
+}
 
-    *current_size += 1 + 1 + 1 + size; // PropID + Type + Size + ValueSize
-    (*count)++;
-}
-// Convenience wrapper for string properties (Value is 1-byte index)
-void add_string_property_to_list(KrbProperty* prop_array, uint8_t* count, uint32_t* current_size, uint8_t prop_id, const char* value_str) {
-     uint8_t str_index = add_string(value_str);
-     add_property_to_list(prop_array, count, current_size, prop_id, VAL_TYPE_STRING, 1, &str_index);
-}
 // Convenience wrapper for resource path properties (Value is 1-byte index to string path)
-void add_resource_path_property_to_list(KrbProperty* prop_array, uint8_t* count, uint32_t* current_size, uint8_t prop_id, const char* path_str) {
-     // Spec says Resource Type (0x05) uses index to resource table.
-     // If we only support external resources for now, we store the path string index.
-     // A more robust compiler might create a resource entry and store *that* index.
-     // Let's store string index for now, assuming Format=0x00 (External).
-     uint8_t str_index = add_string(path_str);
-     // Using VAL_TYPE_STRING here to point to the path, NOT VAL_TYPE_RESOURCE yet.
-     // A full resource implementation would differ. Prop ID is still PROP_ID_ICON etc.
-     add_property_to_list(prop_array, count, current_size, prop_id, VAL_TYPE_STRING, 1, &str_index);
-     // TODO: Or, implement Resource Table properly. If using Resource Table:
-     // uint8_t res_index = add_resource(path_str, RES_TYPE_IMAGE, RES_FORMAT_EXTERNAL);
-     // add_property_to_list(prop_array, count, current_size, prop_id, VAL_TYPE_RESOURCE, 1, &res_index);
-     // g_header_flags |= FLAG_HAS_RESOURCES;
+void add_resource_path_property_to_list(KrbProperty* prop_array, uint8_t* prop_count, uint32_t* current_size, 
+                                         uint8_t prop_id, const char* path_str) {
+    // Explicit NULL checks
+    if (!prop_array || !prop_count || !current_size) {
+        fprintf(stderr, "FATAL: Null pointer in add_resource_path_property_to_list\n");
+        fprintf(stderr, "prop_array: %p, prop_count: %p, current_size: %p\n", 
+                (void*)prop_array, (void*)prop_count, (void*)current_size);
+        exit(EXIT_FAILURE);
+    }
+    
+    uint8_t str_index = add_string(path_str);
+    add_property_to_list(prop_array, prop_count, current_size, prop_id, VAL_TYPE_STRING, 1, &str_index);
 }
-
 
 // --- Pass 1: Parsing and Size Calculation ---
 int parse_and_calculate_sizes(FILE* in) {
     char line[MAX_LINE_LENGTH];
     Element* current_element = NULL;
     StyleEntry* current_style = NULL;
-    int current_indent = -1; // Use -1 to indicate top level
-    int element_indent_stack[MAX_ELEMENTS]; // Track indent level of parent elements
-    int element_index_stack[MAX_ELEMENTS]; // Track indices of parent elements
+    int current_indent = -1;
+    int element_indent_stack[MAX_ELEMENTS];
+    int element_index_stack[MAX_ELEMENTS];
     int element_stack_top = -1;
     int line_num = 0;
-
-    g_header_flags = 0; // Reset flags for this compilation
+    g_header_flags = 0;
 
     while (fgets(line, sizeof(line), in)) {
         line_num++;
-        char* trimmed = line;
-        int indent = 0;
-        while (*trimmed == ' ' || *trimmed == '\t') {
-            indent += (*trimmed == '\t' ? 4 : 1); // Simple indent count
-            trimmed++;
-        }
-        char* end = trimmed + strlen(trimmed) - 1;
-        while (end >= trimmed && isspace((unsigned char)*end)) *end-- = '\0';
-
-        if (*trimmed == '\0' || *trimmed == '#') continue; // Skip empty lines and comments beginning with #
+        char* trimmed = line; int indent = 0;
+        while (*trimmed == ' ' || *trimmed == '\t') { indent += (*trimmed == '\t' ? 4 : 1); trimmed++; }
+        char* end = trimmed + strlen(trimmed) - 1; while (end >= trimmed && isspace((unsigned char)*end)) *end-- = '\0';
+        if (*trimmed == '\0' || *trimmed == '#') continue;
 
         // --- End Block Logic ---
         if (*trimmed == '}') {
             if (current_element && element_stack_top >= 0 && indent == element_indent_stack[element_stack_top]) {
-                 // Finalize element size: Header + Properties + Events + Anims + Child Offsets
-                current_element->calculated_size += current_element->event_count * 2; // TODO: Define event ref size (assuming 2 bytes: type + callback)
-                current_element->calculated_size += current_element->animation_count * 2; // TODO: Define anim ref size (assuming 2 bytes: index + trigger)
-                current_element->calculated_size += current_element->child_count * 2; // 2 bytes per child offset
-
-                // Pop from element stack
+                current_element->calculated_size += current_element->event_count * 2 + current_element->animation_count * 2 + current_element->child_count * 2;
                 element_stack_top--;
                 current_indent = (element_stack_top >= 0) ? element_indent_stack[element_stack_top] : -1;
-                // Restore current_element to parent
                 current_element = (element_stack_top >= 0) ? &g_elements[element_index_stack[element_stack_top]] : NULL;
                 continue;
             } else if (current_style && indent == current_indent) {
-                // Style size was calculated incrementally. Finalize nothing here.
-                current_style = NULL;
-                current_indent = -1;
-                continue;
-            } else if (element_stack_top == -1 && !current_style) {
-                 fprintf(stderr, "Error line %d: Extraneous '}' at root level.\n", line_num);
-                 return 1;
-            }
-            else {
-                fprintf(stderr, "Error line %d: Unexpected '}' or incorrect indentation. Current Indent: %d, Line Indent: %d, Stack Top: %d\n",
-                        line_num, current_indent, indent, element_stack_top);
-                return 1;
+                current_style = NULL; current_indent = -1; continue;
+            } else {
+                 fprintf(stderr, "Error line %d: Mismatched '}' or indentation. Indent: %d, Expected: %d\n", line_num, indent, current_indent); return 1;
             }
         }
 
         // --- Start New Block Logic ---
         if (strncmp(trimmed, "style ", 6) == 0 && strstr(trimmed, "{")) {
-             if (current_element || current_style) {
-                fprintf(stderr, "Error line %d: Cannot define style inside another block.\n", line_num); return 1;
-            }
-            char style_name[128];
-            if (sscanf(trimmed, "style \"%127[^\"]\" {", style_name) == 1) {
-                if (g_style_count >= MAX_STYLES) {
-                     fprintf(stderr, "Error line %d: Maximum style count (%d) exceeded.\n", line_num, MAX_STYLES); return 1;
-                 }
-                current_style = &g_styles[g_style_count];
-                current_style->id = g_style_count + 1; // 1-based ID
-                current_style->name_index = add_string(style_name); // Add name to string table
-                current_style->property_count = 0;
-                current_style->calculated_size = 1 + 1 + 1; // ID + NameIndex + PropCount base size
-                g_style_count++;
-                current_indent = indent;
-                g_header_flags |= FLAG_HAS_STYLES;
-            } else {
-                 fprintf(stderr, "Error line %d: Invalid style definition: %s\n", line_num, trimmed); return 1;
-             }
+             if (current_element || current_style) { fprintf(stderr, "Error line %d: Cannot nest blocks.\n", line_num); return 1; }
+             char style_name[128];
+             if (sscanf(trimmed, "style \"%127[^\"]\" {", style_name) == 1) {
+                if (g_style_count >= MAX_STYLES) { fprintf(stderr, "Error line %d: Max styles (%d) exceeded.\n", line_num, MAX_STYLES); return 1; }
+                current_style = &g_styles[g_style_count]; // Get pointer to the *next available* style entry
+                // *** Explicit Initialization of the StyleEntry ***
+                memset(current_style, 0, sizeof(StyleEntry)); // Zero out the struct
+                current_style->id = g_style_count + 1;
+                current_style->name_index = add_string(style_name);
+                current_style->property_count = 0; // Redundant due to memset, but explicit
+                current_style->calculated_size = 1 + 1 + 1; // Base size: ID(1) + NameIndex(1) + PropCount(1)
+                // *** End Initialization ***
+                g_style_count++; // Increment count *after* using it as index
+                current_indent = indent; g_header_flags |= FLAG_HAS_STYLES;
+             } else { fprintf(stderr, "Error line %d: Invalid style definition (use quotes): %s\n", line_num, trimmed); return 1; }
         }
         else if (isalpha((unsigned char)*trimmed) && strstr(trimmed, "{")) { // Potential Element Start
-             if (current_style) {
-                 fprintf(stderr, "Error line %d: Cannot define element inside style block.\n", line_num); return 1;
-             }
-             if (g_element_count >= MAX_ELEMENTS) {
-                 fprintf(stderr, "Error line %d: Maximum element count (%d) exceeded.\n", line_num, MAX_ELEMENTS); return 1;
-             }
+             if (current_style) { fprintf(stderr, "Error line %d: Cannot define element inside style.\n", line_num); return 1; }
+             if (g_element_count >= MAX_ELEMENTS) { fprintf(stderr, "Error line %d: Max elements (%d) exceeded.\n", line_num, MAX_ELEMENTS); return 1; }
 
-             // Determine parent *before* incrementing stack top
              Element* parent = (element_stack_top >= 0) ? &g_elements[element_index_stack[element_stack_top]] : NULL;
+             current_element = &g_elements[g_element_count]; // Get pointer
 
-             // Set current element *before* pushing onto stack
-             current_element = &g_elements[g_element_count];
+             // *** Explicit Initialization of the Element ***
+             memset(current_element, 0, sizeof(Element)); // Zero out the whole struct
              current_element->self_index = g_element_count;
              current_element->parent_index = (parent) ? parent->self_index : -1;
+             current_element->calculated_size = 16; // Base header size
+             // *** End Initialization ***
 
-            // Basic Initialization
-            memset(current_element->properties, 0, sizeof(current_element->properties)); // Zero out properties array
-            current_element->id_string_index = 0;
-            current_element->pos_x = 0;
-            current_element->pos_y = 0;
-            current_element->width = 0;
-            current_element->height = 0;
-            current_element->layout = 0;
-            current_element->style_id = 0;
-            current_element->property_count = 0;
-            current_element->child_count = 0;
-            current_element->event_count = 0;
-            current_element->animation_count = 0;
-            current_element->calculated_size = 16; // Base header size only initially
-            for(int i=0; i<MAX_CHILDREN; ++i) current_element->children[i] = NULL; // Explicitly NULL children pointers
-
-
-            // Determine Type
-            if (strncmp(trimmed, "App {", 5) == 0) {
-                current_element->type = 0x00; // App
-                if (g_has_app) { fprintf(stderr, "Error line %d: Only one App element allowed.\n", line_num); return 1; }
-                if (parent) { fprintf(stderr, "Error line %d: App element cannot be a child.\n", line_num); return 1; }
-                g_has_app = 1;
-                g_header_flags |= FLAG_HAS_APP;
-            } else if (strncmp(trimmed, "Container {", 11) == 0) {
-                current_element->type = 0x01; // Container
-            } else if (strncmp(trimmed, "Text {", 6) == 0) {
-                current_element->type = 0x02; // Text
-            } else if (strncmp(trimmed, "Image {", 7) == 0) {
-                current_element->type = 0x03; // Image
-            } else if (strncmp(trimmed, "Canvas {", 8) == 0) {
-                current_element->type = 0x04; // Canvas
-            } else if (strncmp(trimmed, "Button {", 8) == 0) {
-                current_element->type = 0x10; // Button
-            } else if (strncmp(trimmed, "Input {", 7) == 0) {
-                current_element->type = 0x11; // Input
-            } else if (strncmp(trimmed, "List {", 6) == 0) {
-                current_element->type = 0x20; // List
-            } else if (strncmp(trimmed, "Grid {", 6) == 0) {
-                current_element->type = 0x21; // Grid
-            } else if (strncmp(trimmed, "Scrollable {", 12) == 0) {
-                current_element->type = 0x22; // Scrollable
-            }
-             // Add more element types here...
-             else {
-                 // Could be a custom element - try to extract name
-                 char custom_name[64];
-                 if (sscanf(trimmed, "%63s {", custom_name) == 1) {
-                     fprintf(stderr, "Warning line %d: Assuming '%s' is a custom element (Type 0x31+). Not fully implemented.\n", line_num, custom_name);
-                     // Assign a generic custom type or lookup based on name if registry exists
-                     current_element->type = 0x31; // Example generic custom type
-                     current_element->id_string_index = add_string(custom_name);
-                     // TODO: Add custom element handling if needed
-                 } else {
-                     fprintf(stderr, "Error line %d: Unknown element type or invalid syntax: %s\n", line_num, trimmed);
-                     return 1;
-                 }
+             // Determine Type
+             if (strncmp(trimmed, "App {", 5) == 0) { current_element->type = ELEM_TYPE_APP; if (g_has_app || parent) { fprintf(stderr, "Error line %d: Invalid App definition.\n", line_num); return 1; } g_has_app = 1; g_header_flags |= FLAG_HAS_APP; }
+             else if (strncmp(trimmed, "Container {", 11) == 0) { current_element->type = ELEM_TYPE_CONTAINER; }
+             else if (strncmp(trimmed, "Text {", 6) == 0) { current_element->type = ELEM_TYPE_TEXT; }
+             else if (strncmp(trimmed, "Image {", 7) == 0) { current_element->type = ELEM_TYPE_IMAGE; }
+             else if (strncmp(trimmed, "Canvas {", 8) == 0) { current_element->type = ELEM_TYPE_CANVAS; }
+             else if (strncmp(trimmed, "Button {", 8) == 0) { current_element->type = ELEM_TYPE_BUTTON; }
+             else if (strncmp(trimmed, "Input {", 7) == 0) { current_element->type = ELEM_TYPE_INPUT; }
+             else if (strncmp(trimmed, "List {", 6) == 0) { current_element->type = ELEM_TYPE_LIST; }
+             else if (strncmp(trimmed, "Grid {", 6) == 0) { current_element->type = ELEM_TYPE_GRID; }
+             else if (strncmp(trimmed, "Scrollable {", 12) == 0) { current_element->type = ELEM_TYPE_SCROLLABLE; }
+             else { // Custom
+                 char custom_name[64]; if (sscanf(trimmed, "%63s {", custom_name) != 1) { fprintf(stderr, "Error line %d: Invalid element syntax: %s\n", line_num, trimmed); return 1; }
+                 fprintf(stderr, "Warning line %d: Custom element '%s' (Type 0x31+).\n", line_num, custom_name); current_element->type = 0x31; current_element->id_string_index = add_string(custom_name);
              }
 
-             // Add to parent if applicable *after* identifying the parent
-             if (parent) {
-                 if (parent->child_count >= MAX_CHILDREN) {
-                     fprintf(stderr, "Error line %d: Maximum children (%d) exceeded for parent element index %d.\n", line_num, MAX_CHILDREN, parent->self_index); return 1;
-                 }
-                 parent->children[parent->child_count++] = current_element;
-             }
+             if (parent) { if (parent->child_count >= MAX_CHILDREN) { fprintf(stderr, "Error line %d: Max children (%d) exceeded.\n", line_num, MAX_CHILDREN); return 1; } parent->children[parent->child_count++] = current_element; }
 
-             // Push onto element stack *after* setting up current_element
-             element_stack_top++;
-             if(element_stack_top >= MAX_ELEMENTS) { // Check stack bounds
-                 fprintf(stderr, "Error line %d: Element nesting depth exceeds limit (%d).\n", line_num, MAX_ELEMENTS); return 1;
-             }
-             element_indent_stack[element_stack_top] = indent;
-             element_index_stack[element_stack_top] = g_element_count; // Store index
-             g_element_count++; // Increment global count *after* pushing
-             current_indent = indent; // Set indent for properties inside this element
+             element_stack_top++; if(element_stack_top >= MAX_ELEMENTS) { fprintf(stderr, "Error line %d: Nesting depth exceeded (%d).\n", line_num, MAX_ELEMENTS); return 1; }
+             element_indent_stack[element_stack_top] = indent; element_index_stack[element_stack_top] = g_element_count;
+             g_element_count++; // Increment count *after* using it as index
+             current_indent = indent;
         }
-        // --- Property Parsing Logic ---
-        else if ((current_element && indent > current_indent) || (current_style && indent > current_indent)) {
+        // --- Property/Event Parsing Logic ---
+        else if (indent > current_indent && (current_element != NULL || current_style != NULL)) {
+
+            // *** Determine Context and Target Pointers ***
+            KrbProperty* target_props = NULL;
+            uint8_t* target_prop_count = NULL;
+            uint32_t* target_block_size = NULL;
+            uint8_t local_prop_count = 0;  // Local count variable
+            bool is_style_context = false;
+
+            if (current_style != NULL) { // Style context MUST take precedence if active
+                target_props = current_style->properties;
+                target_prop_count = &current_style->property_count;
+                target_block_size = &current_style->calculated_size;
+                local_prop_count = current_style->property_count;  // Initialize local count
+                is_style_context = true;
+                
+                // Sanity check - element should be NULL in style context
+                if (current_element != NULL) {
+                    fprintf(stderr, "FATAL INTERNAL Error line %d: Both current_style and current_element are non-NULL in property parsing.\n", line_num);
+                    exit(EXIT_FAILURE);
+                }
+            } else if (current_element != NULL) { // Element context
+                target_props = current_element->properties;
+                target_prop_count = &current_element->property_count;
+                target_block_size = &current_element->calculated_size;
+                local_prop_count = current_element->property_count;  // Initialize local count
+                is_style_context = false;
+            } else {
+                // Should not be reached due to outer 'if', but for safety:
+                fprintf(stderr, "FATAL INTERNAL Error line %d: Property parsing entered but context is NULL.\n", line_num);
+                exit(EXIT_FAILURE);
+            }
+
+            // Explicit NULL checks before processing
+            if (target_props == NULL) {
+                fprintf(stderr, "FATAL: target_props is NULL at line %d\n", line_num);
+                return 1;
+            }
+            if (target_block_size == NULL) {
+                fprintf(stderr, "FATAL: target_block_size is NULL at line %d\n", line_num);
+                return 1;
+            }
+
+            // Explicit NULL checks before processing
+            if (target_props == NULL) {
+                fprintf(stderr, "FATAL: target_props is NULL at line %d\n", line_num);
+                return 1;
+            }
+            if (target_prop_count == NULL) {
+                fprintf(stderr, "FATAL: target_prop_count is NULL at line %d\n", line_num);
+                return 1;
+            }
+            if (target_block_size == NULL) {
+                fprintf(stderr, "FATAL: target_block_size is NULL at line %d\n", line_num);
+                return 1;
+            }
+
+
+            // *** End Context Determination ***
+
+            // *** Basic Pointer Check (Redundant but safe) ***
+            // If we reached here, target pointers SHOULD be valid based on the logic above.
+            // The checks inside add_property_to_list will catch issues if somehow they aren't.
+            // We removed the explicit check here that was causing the confusing error.
+
+            // --- Now parse the 'key: value' line ---
             char key[64], value_str[MAX_LINE_LENGTH - 64];
             if (sscanf(trimmed, "%63[^:]:%[^\n]", key, value_str) == 2) {
-                // Trim key whitespace
-                char* key_end = key + strlen(key) - 1;
-                while (key_end >= key && isspace((unsigned char)*key_end)) *key_end-- = '\0';
 
-                // Trim value_str leading whitespace (most important)
-                char* val_start = value_str;
-                while (*val_start && isspace((unsigned char)*val_start)) val_start++;
-                 // Trailing value whitespace is trimmed by add_string if it's a string prop
+                char* key_end = key + strlen(key) - 1; while (key_end >= key && isspace((unsigned char)*key_end)) *key_end-- = '\0';
+                char* val_start = value_str; while (*val_start && isspace((unsigned char)*val_start)) val_start++;
 
-                // Pointer to the list and count to modify (element or style)
+                // --- Process Property/Event based on Key ---
+                // Use target_props, target_prop_count, target_block_size which are now guaranteed to point to the correct context (style or element)
 
-                KrbProperty* target_props = current_element ? current_element->properties : current_style->properties;
-                uint8_t* target_count = current_element ? &current_element->property_count : &current_style->property_count;
-                uint32_t* target_size = current_element ? &current_element->calculated_size : &current_style->calculated_size;
+                // Element Header Fields (Guard with !is_style_context)
+                 if (!is_style_context && strcmp(key, "id") == 0 ) { current_element->id_string_index = add_string(val_start); }
+                 else if (!is_style_context && strcmp(key, "pos_x") == 0 ) { current_element->pos_x = (uint16_t)atoi(val_start); }
+                 else if (!is_style_context && strcmp(key, "pos_y") == 0 ) { current_element->pos_y = (uint16_t)atoi(val_start); }
+                 else if (!is_style_context && strcmp(key, "width") == 0 ) { current_element->width = (uint16_t)atoi(val_start); }
+                 else if (!is_style_context && strcmp(key, "height") == 0 ) { current_element->height = (uint16_t)atoi(val_start); }
+                 else if (!is_style_context && strcmp(key, "style") == 0 ) { current_element->style_id = find_style_id_by_name(val_start); if(current_element->style_id == 0) { fprintf(stderr, "Warning line %d: Style '%s' not found.\n", line_num, val_start); } }
+                 else if (!is_style_context && strcmp(key, "layout") == 0 ) { uint8_t b=0; if (strstr(val_start,"col_rev")) b|=3; else if(strstr(val_start,"row_rev")) b|=2; else if(strstr(val_start,"col")) b|=1; if(strstr(val_start,"space")) b|=(3<<2); else if(strstr(val_start,"end")) b|=(2<<2); else if(strstr(val_start,"center")) b|=(1<<2); if(strstr(val_start,"wrap")) b|=LAYOUT_WRAP_BIT; if(strstr(val_start,"grow")) b|=LAYOUT_GROW_BIT; if(strstr(val_start,"abs")) b|=LAYOUT_ABSOLUTE_BIT; current_element->layout = b; }
 
-                 // --- Add Property Logic ---
-                // Note: These checks apply the property to EITHER the current element OR the current style
+                // Event Handling (Guard with !is_style_context)
+                 else if (!is_style_context && strcmp(key, "onClick") == 0 ) { if (current_element->event_count>=MAX_EVENTS) { fprintf(stderr,"Warn L%d: Max events\n",line_num);} else { uint8_t cb=add_string(val_start); current_element->events[current_element->event_count].event_type=EVENT_TYPE_CLICK; current_element->events[current_element->event_count].callback_id=cb; current_element->event_count++; } }
+                 // Add other events...
 
-                // General Properties (Applicable to many elements/styles)
-                 if (strcmp(key, "id") == 0 && current_element) { current_element->id_string_index = add_string(val_start); }
-                 else if (strcmp(key, "pos_x") == 0 && current_element) { current_element->pos_x = atoi(val_start); }
-                 else if (strcmp(key, "pos_y") == 0 && current_element) { current_element->pos_y = atoi(val_start); }
-                 else if (strcmp(key, "width") == 0 && current_element) { current_element->width = atoi(val_start); }
-                 else if (strcmp(key, "height") == 0 && current_element) { current_element->height = atoi(val_start); }
-                 else if (strcmp(key, "style") == 0 && current_element) {
-                     current_element->style_id = find_style_id_by_name(val_start);
-                     if(current_element->style_id == 0) {
-                          fprintf(stderr, "Warning line %d: Style '%s' not found or defined yet.\n", line_num, val_start);
-                     }
-                 }
-                 else if (strcmp(key, "layout") == 0 && current_element) {
-                    // Reset only relevant bits before applying, preserve others if any
-                    uint8_t current_layout = current_element->layout;
-                    current_layout &= ~(LAYOUT_DIRECTION_MASK | LAYOUT_ALIGNMENT_MASK | LAYOUT_WRAP_BIT | LAYOUT_GROW_BIT | LAYOUT_ABSOLUTE_BIT); // Clear all controllable bits
+                // Visual Properties (Apply in either context - use target_*)
+                 else if (strcmp(key, "background_color") == 0) { uint8_t c[4]; if(parse_color(val_start,c)){ add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BG_COLOR, VAL_TYPE_COLOR, 4, c); g_header_flags |= FLAG_EXTENDED_COLOR;} else fprintf(stderr,"Warn L%d: Bad bg color\n",line_num); }
+                 else if (strcmp(key, "foreground_color") == 0 || strcmp(key, "text_color") == 0) { uint8_t c[4]; if(parse_color(val_start,c)){ add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FG_COLOR, VAL_TYPE_COLOR, 4, c); g_header_flags |= FLAG_EXTENDED_COLOR;} else fprintf(stderr,"Warn L%d: Bad fg color\n",line_num); }
+                 else if (strcmp(key, "border_color") == 0) { uint8_t c[4]; if(parse_color(val_start,c)){ add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_COLOR, VAL_TYPE_COLOR, 4, c); g_header_flags |= FLAG_EXTENDED_COLOR;} else fprintf(stderr,"Warn L%d: Bad border color\n",line_num); }
+                 else if (strcmp(key, "border_width") == 0) { if(strchr(val_start,' ')){ uint8_t w[4]; if(sscanf(val_start,"%hhu%hhu%hhu%hhu",&w[0],&w[1],&w[2],&w[3])==4) add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_WIDTH, VAL_TYPE_EDGEINSETS, 4, w); else fprintf(stderr,"Warn L%d: Bad border widths\n",line_num);} else { uint8_t bw=(uint8_t)atoi(val_start); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_BORDER_WIDTH, VAL_TYPE_BYTE, 1, &bw);}}
+                 // Add other shared visual props...
 
-                    if (strstr(val_start, "column_reverse")) current_layout |= 0x03;
-                    else if (strstr(val_start, "row_reverse")) current_layout |= 0x02;
-                    else if (strstr(val_start, "column")) current_layout |= 0x01;
-                    else /* default row */ current_layout |= 0x00;
+                // Text Content (Guard with !is_style_context and type)
+                 else if (!is_style_context && (current_element->type == ELEM_TYPE_TEXT || current_element->type == ELEM_TYPE_BUTTON || current_element->type == ELEM_TYPE_INPUT) && strcmp(key, "text") == 0) { add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_TEXT_CONTENT, val_start); }
 
-                    if (strstr(val_start, "space_between")) current_layout |= (0x03 << 2);
-                    else if (strstr(val_start, "end")) current_layout |= (0x02 << 2);
-                    else if (strstr(val_start, "center")) current_layout |= (0x01 << 2);
-                    else /* default start */ current_layout |= (0x00 << 2);
-
-                    if (strstr(val_start, "wrap")) current_layout |= LAYOUT_WRAP_BIT;
-                    if (strstr(val_start, "grow")) current_layout |= LAYOUT_GROW_BIT;
-                    if (strstr(val_start, "absolute")) current_layout |= LAYOUT_ABSOLUTE_BIT;
-                    current_element->layout = current_layout; // Assign back
+                // Text Styling (Apply if !is_style_context+type OR is_style_context)
+                 else if ( (!is_style_context && (current_element->type == ELEM_TYPE_TEXT || current_element->type == ELEM_TYPE_BUTTON || current_element->type == ELEM_TYPE_INPUT)) || is_style_context ) {
+                     if (strcmp(key, "text_alignment") == 0) { uint8_t a=0; if(strstr(val_start,"cen")) a=1; else if(strstr(val_start,"rig")||strstr(val_start,"end")) a=2; add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_TEXT_ALIGNMENT, VAL_TYPE_ENUM, 1, &a); }
+                     else if (strcmp(key, "font_size") == 0) { uint16_t s=(uint16_t)atoi(val_start); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FONT_SIZE, VAL_TYPE_SHORT, 2, &s); }
+                     else if (strcmp(key, "font_weight") == 0) { uint16_t w=400; if(strstr(val_start,"bold")) w=700; add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_FONT_WEIGHT, VAL_TYPE_SHORT, 2, &w); }
+                     else { goto check_other_properties; } // Fall through if not a text style prop
                  }
-                 // --- Visual Properties (often in styles too) ---
-                 else if (strcmp(key, "background_color") == 0) {
-                     uint8_t color[4];
-                     if (parse_color(val_start, color)) {
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_BG_COLOR, VAL_TYPE_COLOR, 4, color);
-                         g_header_flags |= FLAG_EXTENDED_COLOR; // Mark that we used RGBA
-                     } else { fprintf(stderr, "Warning line %d: Invalid background_color format: %s\n", line_num, val_start); }
-                 }
-                 else if (strcmp(key, "foreground_color") == 0 || strcmp(key, "text_color") == 0) {
-                     uint8_t color[4];
-                     if (parse_color(val_start, color)) {
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_FG_COLOR, VAL_TYPE_COLOR, 4, color);
-                         g_header_flags |= FLAG_EXTENDED_COLOR;
-                     } else { fprintf(stderr, "Warning line %d: Invalid foreground/text_color format: %s\n", line_num, val_start); }
-                 }
-                 else if (strcmp(key, "border_color") == 0) {
-                     uint8_t color[4];
-                     if (parse_color(val_start, color)) {
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_BORDER_COLOR, VAL_TYPE_COLOR, 4, color);
-                         g_header_flags |= FLAG_EXTENDED_COLOR;
-                     } else { fprintf(stderr, "Warning line %d: Invalid border_color format: %s\n", line_num, val_start); }
-                 }
-                 else if (strcmp(key, "border_width") == 0) {
-                     uint8_t bw = atoi(val_start);
-                     add_property_to_list(target_props, target_count, target_size, PROP_ID_BORDER_WIDTH, VAL_TYPE_BYTE, 1, &bw);
-                 }
-                 else if (strcmp(key, "border_widths") == 0) {
-                     uint8_t widths[4]; // T, R, B, L
-                     if (sscanf(val_start, "%hhu %hhu %hhu %hhu", &widths[0], &widths[1], &widths[2], &widths[3]) == 4) {
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_BORDER_WIDTH, VAL_TYPE_EDGEINSETS, 4, widths);
-                     } else { fprintf(stderr, "Warning line %d: Invalid border_widths format (needs 4 numbers): %s\n", line_num, val_start); }
-                 }
-                 // Add padding, margin (simple short or EdgeInsets)
-                 // Add border_radius, opacity, etc.
-
-                 // --- Text Element Specific ---
-                 else if (current_element && current_element->type == 0x02 && strcmp(key, "text") == 0) {
-                     add_string_property_to_list(target_props, target_count, target_size, PROP_ID_TEXT_CONTENT, val_start);
-                 }
-                 else if ((current_element && current_element->type == 0x02) || current_style) { // text_alignment can be in style too
-                     if (strcmp(key, "text_alignment") == 0) {
-                         uint8_t align_enum = 0; // 0=Start/Left (Default), 1=Center, 2=End/Right (Spec doesn't define values, use these)
-                         if (strstr(val_start, "center")) align_enum = 1;
-                         else if (strstr(val_start, "right") || strstr(val_start, "end")) align_enum = 2;
-                         else if (strstr(val_start, "left") || strstr(val_start, "start")) align_enum = 0;
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_TEXT_ALIGNMENT, VAL_TYPE_ENUM, 1, &align_enum);
-                    }
-                    // Add font_size, font_weight etc.
-                 }
-                 // --- Image Element Specific ---
-                 else if (current_element && current_element->type == 0x03 && strcmp(key, "source") == 0) {
-                     // Assume external image path for now
-                     add_resource_path_property_to_list(target_props, target_count, target_size, PROP_ID_IMAGE_SOURCE, val_start);
-                 }
-
-                 // --- App Element Specific ---
-                 else if (current_element && current_element->type == 0x00) {
-                     if (strcmp(key, "window_width") == 0) {
-                         uint16_t val = atoi(val_start);
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_WINDOW_WIDTH, VAL_TYPE_SHORT, 2, &val);
-                     } else if (strcmp(key, "window_height") == 0) {
-                         uint16_t val = atoi(val_start);
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_WINDOW_HEIGHT, VAL_TYPE_SHORT, 2, &val);
-                     } else if (strcmp(key, "window_title") == 0) {
-                         add_string_property_to_list(target_props, target_count, target_size, PROP_ID_WINDOW_TITLE, val_start);
-                     } else if (strcmp(key, "resizable") == 0) {
-                         uint8_t val = (strstr(val_start, "true") != NULL);
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_RESIZABLE, VAL_TYPE_BYTE, 1, &val);
-                     } else if (strcmp(key, "keep_aspect") == 0) {
-                         uint8_t val = (strstr(val_start, "true") != NULL);
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_KEEP_ASPECT, VAL_TYPE_BYTE, 1, &val);
-                     } else if (strcmp(key, "scale_factor") == 0) {
-                         float scale = atof(val_start);
-                         uint16_t fixed_point = (uint16_t)(scale * 256.0f + 0.5f); // 8.8 fixed point
-                         add_property_to_list(target_props, target_count, target_size, PROP_ID_SCALE_FACTOR, VAL_TYPE_PERCENTAGE, 2, &fixed_point);
-                         g_header_flags |= FLAG_FIXED_POINT; // Mark that we used fixed point
-                     } else if (strcmp(key, "icon") == 0) {
-                         // Treat icon path as string for now, needs proper resource handling
-                         add_resource_path_property_to_list(target_props, target_count, target_size, PROP_ID_ICON, val_start);
-                     } else if (strcmp(key, "version") == 0) {
-                         add_string_property_to_list(target_props, target_count, target_size, PROP_ID_VERSION, val_start);
-                     } else if (strcmp(key, "author") == 0) {
-                         add_string_property_to_list(target_props, target_count, target_size, PROP_ID_AUTHOR, val_start);
-                     } else {
-                         fprintf(stderr, "Warning line %d: Unknown App property '%s'.\n", line_num, key);
-                     }
-                 }
-                 // --- Unhandled ---
                  else {
-                    fprintf(stderr, "Warning line %d: Unhandled property '%s' for current context (Element Type %d / Style).\n",
-                           line_num, key, current_element ? current_element->type : -1);
-                 }
+                 check_other_properties: // Label for fallthrough
 
-            } else {
-                 fprintf(stderr, "Error line %d: Invalid property syntax (missing ':'?): %s\n", line_num, trimmed);
-                 return 1;
-             }
-        } else if (trimmed[0] != '\0') { // Non-empty line that isn't a block start/end or property
-             fprintf(stderr, "Error line %d: Unexpected syntax or indentation: %s\n", line_num, trimmed);
-             return 1;
+                    // Image Source (Guard with !is_style_context and type)
+                     if (!is_style_context && current_element->type == ELEM_TYPE_IMAGE && strcmp(key, "source") == 0) { add_resource_path_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_IMAGE_SOURCE, val_start); }
+
+                    // App Specific (Guard with !is_style_context and type)
+                     else if (!is_style_context && current_element->type == ELEM_TYPE_APP) {
+                         if (strcmp(key, "window_width") == 0) { uint16_t v=(uint16_t)atoi(val_start); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_WINDOW_WIDTH, VAL_TYPE_SHORT, 2, &v); }
+                         else if (strcmp(key, "window_height") == 0) { uint16_t v=(uint16_t)atoi(val_start); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_WINDOW_HEIGHT, VAL_TYPE_SHORT, 2, &v); }
+                         else if (strcmp(key, "window_title") == 0) { add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_WINDOW_TITLE, val_start); }
+                         else if (strcmp(key, "resizable") == 0) { uint8_t v=(strstr(val_start,"true")!=NULL); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_RESIZABLE, VAL_TYPE_BYTE, 1, &v); }
+                         else if (strcmp(key, "keep_aspect") == 0) { uint8_t v=(strstr(val_start,"true")!=NULL); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_KEEP_ASPECT, VAL_TYPE_BYTE, 1, &v); }
+                         else if (strcmp(key, "scale_factor") == 0) { float s=atof(val_start); uint16_t fp=(uint16_t)(s*256.0f+0.5f); add_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_SCALE_FACTOR, VAL_TYPE_PERCENTAGE, 2, &fp); g_header_flags |= FLAG_FIXED_POINT; }
+                         else if (strcmp(key, "icon") == 0) { add_resource_path_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_ICON, val_start); }
+                         else if (strcmp(key, "version") == 0) { add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_VERSION, val_start); }
+                         else if (strcmp(key, "author") == 0) { add_string_property_to_list(target_props, target_prop_count, target_block_size, PROP_ID_AUTHOR, val_start); }
+                         else { fprintf(stderr, "Warning line %d: Unhandled App property '%s'.\n", line_num, key); }
+                     }
+                    // Final Catch-all
+                     else { fprintf(stderr, "Warning line %d: Unhandled property '%s' in %s context.\n", line_num, key, is_style_context ? "Style" : "Element"); }
+                 } // End main property chain
+
+            } else { // sscanf failed
+                 fprintf(stderr, "Error line %d: Invalid property syntax (missing ':'?): %s\n", line_num, trimmed); return 1;
+            }
+        } else if (trimmed[0] != '\0') { // Unexpected syntax/indent
+             fprintf(stderr, "Error line %d: Unexpected syntax or indentation: '%s' (Indent %d vs Current %d)\n", line_num, trimmed, indent, current_indent); return 1;
         }
     } // End while fgets
 
-    // Check for unclosed blocks
-    if (element_stack_top != -1) {
-        fprintf(stderr, "Error: Unclosed element block at end of file (stack top %d, element index %d).\n",
-                element_stack_top, element_index_stack[element_stack_top]);
-        return 1;
-    }
-    if (current_style) {
-         fprintf(stderr, "Error: Unclosed style block at end of file.\n");
-        return 1;
-    }
-
-    // Ensure App element is first if present
-    if (g_has_app && g_element_count > 0 && g_elements[0].type != 0x00) {
-        fprintf(stderr, "Internal Error: App element was parsed but is not the first element.\n");
-        // This indicates a logic error in parsing/stack handling.
-        return 1;
-    }
-
+    // --- End of File Checks ---
+    if (element_stack_top != -1) { fprintf(stderr, "Error: Unclosed element block.\n"); return 1; }
+    if (current_style) { fprintf(stderr, "Error: Unclosed style block.\n"); return 1; }
+    if (g_has_app && g_element_count > 0 && g_elements[0].type != ELEM_TYPE_APP) { fprintf(stderr, "Internal Error: App element not first.\n"); return 1; }
 
     return 0; // Success
 }
@@ -715,7 +655,8 @@ int parse_and_calculate_sizes(FILE* in) {
 // --- Pass 2: Writing the KRB File ---
 int write_krb_file(FILE* out) {
     // --- 1. Calculate Offsets ---
-    uint32_t element_section_offset = 38; // Header size
+    uint32_t header_size = 38;
+    uint32_t element_section_offset = header_size;
     uint32_t current_offset = element_section_offset;
     uint32_t style_section_offset = 0;
     uint32_t animation_section_offset = 0;
@@ -723,245 +664,62 @@ int write_krb_file(FILE* out) {
     uint32_t resource_section_offset = 0;
     uint32_t total_size = 0;
 
-    // Calculate absolute offsets and total size of element blocks
-    for (int i = 0; i < g_element_count; i++) {
-        g_elements[i].absolute_offset = current_offset;
-        current_offset += g_elements[i].calculated_size;
-    }
-    // current_offset now holds the end of the element section
-
-    // Calculate style section offset and end
-    if (g_style_count > 0) {
-        style_section_offset = current_offset; // Starts after elements end
-        for (int i = 0; i < g_style_count; i++) {
-            current_offset += g_styles[i].calculated_size;
-        }
-        g_header_flags |= FLAG_HAS_STYLES; // Ensure flag is set if styles exist
-    } else {
-        style_section_offset = current_offset; // If no styles, starts where elements end
-    }
-    // current_offset now holds the end of the style section
-
-    // TODO: Calculate animation section offset and end
-    if (g_animation_count > 0) {
-        animation_section_offset = current_offset; // Starts after styles end
-        // Add sizes of animation entries...
-        // current_offset += ... total animation size ...
-        g_header_flags |= FLAG_HAS_ANIMATIONS; // Ensure flag is set
-    } else {
-        animation_section_offset = current_offset; // If no anims, starts where styles end
-    }
-    // current_offset now holds the end of the animation section
-
-    // Calculate string section offset and end
-    if (g_string_count > 0) {
-        string_section_offset = current_offset; // Starts after animations end
-        current_offset += 2; // String Count field
-        for (int i = 0; i < g_string_count; i++) {
-            current_offset += 1 + g_strings[i].length; // Length byte + UTF-8 bytes
-        }
-    } else {
-         string_section_offset = current_offset; // If no strings, starts where anims end
-    }
-     // current_offset now holds the end of the string section
-
-     // TODO: Calculate resource section offset and end
-    if (g_resource_count > 0) {
-        resource_section_offset = current_offset; // Starts after strings end
-        // Add sizes of resource entries...
-        // current_offset += ... total resource size ...
-        g_header_flags |= FLAG_HAS_RESOURCES; // Ensure flag is set
-    } else {
-        resource_section_offset = current_offset; // If no resources, starts where strings end
-    }
-    // current_offset now holds the end of the resource section
-
-    total_size = current_offset; // Final end is the total size
+    // Elements
+    for (int i = 0; i < g_element_count; i++) { g_elements[i].absolute_offset = current_offset; if(g_elements[i].calculated_size < 16) { fprintf(stderr, "IntErr: Elem %d size %u<16\n",i,g_elements[i].calculated_size); return 1; } current_offset += g_elements[i].calculated_size; }
+    // Styles
+    if (g_style_count > 0) { style_section_offset = current_offset; g_header_flags |= FLAG_HAS_STYLES; for (int i = 0; i < g_style_count; i++) { if(g_styles[i].calculated_size < 3) { fprintf(stderr, "IntErr: Style %d size %u<3\n",i,g_styles[i].calculated_size); return 1; } current_offset += g_styles[i].calculated_size; } } else { style_section_offset = current_offset; g_header_flags &= ~FLAG_HAS_STYLES; }
+    // Animations
+    if (g_animation_count > 0) { animation_section_offset = current_offset; g_header_flags |= FLAG_HAS_ANIMATIONS; /* current_offset += ... */ } else { animation_section_offset = current_offset; g_header_flags &= ~FLAG_HAS_ANIMATIONS; }
+    // Strings
+    if (g_string_count > 0) { string_section_offset = current_offset; current_offset += 2; for (int i = 0; i < g_string_count; i++) { if (g_strings[i].length > 255) { fprintf(stderr, "Err: Str %d len %zu>255\n",i,g_strings[i].length); return 1; } current_offset += 1 + g_strings[i].length; } } else { string_section_offset = current_offset; }
+    // Resources
+    if (g_resource_count > 0) { resource_section_offset = current_offset; g_header_flags |= FLAG_HAS_RESOURCES; /* current_offset += ... */ } else { resource_section_offset = current_offset; g_header_flags &= ~FLAG_HAS_RESOURCES; }
+    total_size = current_offset;
 
     // --- 2. Write Header ---
-    rewind(out); // Go back to start to write header with calculated offsets
-    fwrite(KRB_MAGIC, 1, 4, out);
-    // Use version 1.0 as 0x0100 (Major 1, Minor 0) in little-endian -> write 0x00, 0x01
-    write_u16(out, 0x0001); // Correctly writes 01 00 for LE 1.0
-    write_u16(out, g_header_flags);
-    write_u16(out, (uint16_t)g_element_count);
-    write_u16(out, (uint16_t)g_style_count);
-    write_u16(out, (uint16_t)g_animation_count); // Placeholder
-    write_u16(out, (uint16_t)g_string_count);
-    write_u16(out, (uint16_t)g_resource_count);   // Placeholder
-    write_u32(out, element_section_offset);
-    write_u32(out, style_section_offset);
-    write_u32(out, animation_section_offset); // Placeholder
-    write_u32(out, string_section_offset);
-    // Spec V1.0 shows Total Size at offset 34, not Resource Offset
-    write_u32(out, total_size);
-    // Note: If Resource Offset is needed, the header spec needs adjustment/clarification.
-    // Current writing matches provided spec v1.0 header layout.
-
-    // Seek to start of element data
-    if (fseek(out, element_section_offset, SEEK_SET) != 0) {
-        perror("Error seeking to element section"); return 1;
-    }
+    rewind(out);
+    fwrite(KRB_MAGIC, 1, 4, out); write_u16(out, (KRB_VERSION_MINOR << 8)|KRB_VERSION_MAJOR); write_u16(out, g_header_flags); write_u16(out, (uint16_t)g_element_count); write_u16(out, (uint16_t)g_style_count); write_u16(out, (uint16_t)g_animation_count); write_u16(out, (uint16_t)g_string_count); write_u16(out, (uint16_t)g_resource_count); write_u32(out, element_section_offset); write_u32(out, style_section_offset); write_u32(out, animation_section_offset); write_u32(out, string_section_offset); write_u32(out, total_size);
+    if (ftell(out) != header_size) { fprintf(stderr, "IntErr: Header write size %ld!=%u\n", ftell(out), header_size); return 1; }
 
     // --- 3. Write Element Blocks ---
-    if (ftell(out) != element_section_offset) {
-         fprintf(stderr, "Internal Error: File pointer mismatch before writing elements (%ld != %u)\n", ftell(out), element_section_offset);
-         return 1;
-    }
+    if (fseek(out, element_section_offset, SEEK_SET) != 0) { perror("Seek fail Elem"); return 1; }
     for (int i = 0; i < g_element_count; i++) {
-        Element* el = &g_elements[i];
-        uint32_t element_start_pos = ftell(out);
-        if (element_start_pos != el->absolute_offset) {
-            fprintf(stderr, "Internal Error: File pointer mismatch for element %d (%u != %u)\n", i, (unsigned int)element_start_pos, el->absolute_offset);
-            return 1;
-        }
-
-        // Write Element Header
-        write_u8(out, el->type);
-        write_u8(out, el->id_string_index); // ID (String table index or 0)
-        write_u16(out, el->pos_x);
-        write_u16(out, el->pos_y);
-        write_u16(out, el->width);
-        write_u16(out, el->height);
-        write_u8(out, el->layout);
-        write_u8(out, el->style_id); // Style reference (1-based or 0)
-        write_u8(out, el->property_count);
-        write_u8(out, el->child_count);
-        write_u8(out, el->event_count);
-        write_u8(out, el->animation_count);
-
-        // Write Properties
-        for (int j = 0; j < el->property_count; j++) {
-            KrbProperty* p = &el->properties[j];
-            write_u8(out, p->property_id);
-            write_u8(out, p->value_type);
-            write_u8(out, p->size);
-            if (fwrite(p->value, 1, p->size, out) != p->size) {
-                 perror("Error writing property value"); return 1;
-            }
-        }
-
-        // TODO: Write Event References
-        // for (int j = 0; j < el->event_count; j++) { ... }
-
-        // TODO: Write Animation References
-        // for (int j = 0; j < el->animation_count; j++) { ... }
-
-        // Write Child References (Relative Offsets)
-        for (int j = 0; j < el->child_count; j++) {
-            Element* child = el->children[j];
-            if (!child) {
-                 fprintf(stderr, "Internal Error: Child pointer is null for element %d, child %d\n", i, j);
-                 return 1;
-             }
-            // Offset is from the start of *this* element's data block to the start of the *child's* data block
-            uint32_t relative_offset_32 = child->absolute_offset - el->absolute_offset;
-             if (relative_offset_32 > 0xFFFF) {
-                 fprintf(stderr, "Error: Relative child offset exceeds 16 bits for element %d to child %d (%u).\n", i, child->self_index, relative_offset_32);
-                 // This format might need 32-bit offsets if nesting gets very deep or elements very large.
-                 // For now, truncate or error. Let's error.
-                 return 1;
-             }
-            write_u16(out, (uint16_t)relative_offset_32);
-        }
-
-        // Sanity check size
-        uint32_t element_end_pos = ftell(out);
-        if (element_end_pos - element_start_pos != el->calculated_size) {
-             fprintf(stderr, "Internal Error: Calculated size mismatch for element %d (%u != %u)\n",
-                i, (unsigned int)(element_end_pos - element_start_pos), el->calculated_size);
-             // This implies an error in Pass 1 size calculation.
-             return 1;
-        }
+        Element* el = &g_elements[i]; uint32_t start = ftell(out); if (start != el->absolute_offset) { fprintf(stderr, "IntErr: Elem %d offset %u!=%u\n",i,start,el->absolute_offset); return 1; }
+        write_u8(out, el->type); write_u8(out, el->id_string_index); write_u16(out, el->pos_x); write_u16(out, el->pos_y); write_u16(out, el->width); write_u16(out, el->height); write_u8(out, el->layout); write_u8(out, el->style_id); write_u8(out, el->property_count); write_u8(out, el->child_count); write_u8(out, el->event_count); write_u8(out, el->animation_count);
+        for (int j=0; j<el->property_count; j++) { KrbProperty* p=&el->properties[j]; write_u8(out,p->property_id); write_u8(out,p->value_type); write_u8(out,p->size); if (p->size>0 && fwrite(p->value,1,p->size,out)!=p->size) { perror("Write Elem Prop"); return 1; } }
+        for (int j=0; j<el->event_count; j++) { write_u8(out,el->events[j].event_type); write_u8(out,el->events[j].callback_id); }
+        /* TODO: Write Anim Refs */
+        for (int j=0; j<el->child_count; j++) { Element* c=el->children[j]; if(!c) { fprintf(stderr,"IntErr: Elem %d null child %d\n",i,j); return 1; } uint32_t off=c->absolute_offset-el->absolute_offset; if(off>0xFFFF){ fprintf(stderr,"Err: Elem %d child %d offset %u>16bit\n",i,j,off); return 1;} write_u16(out,(uint16_t)off); }
+        if ((uint32_t)ftell(out)-start != el->calculated_size) { fprintf(stderr, "IntErr: Elem %d write size %u!=%u\n", i, (unsigned int)(ftell(out)-start), el->calculated_size); return 1; }
     }
 
     // --- 4. Write Style Blocks ---
-    if (style_section_offset > 0 && g_style_count > 0) { // Check count too
-         if (ftell(out) != style_section_offset) {
-             fprintf(stderr, "Internal Error: File pointer mismatch before writing styles (%ld != %u)\n", ftell(out), style_section_offset);
-             return 1;
-        }
-        for (int i = 0; i < g_style_count; i++) {
-            StyleEntry* st = &g_styles[i];
-            uint32_t style_start_pos = ftell(out);
-
-            write_u8(out, st->id);         // Style ID (1-based)
-            write_u8(out, st->name_index); // String table index for name
-            write_u8(out, st->property_count);
-
-            // Write Properties
-            for (int j = 0; j < st->property_count; j++) {
-                KrbProperty* p = &st->properties[j];
-                write_u8(out, p->property_id);
-                write_u8(out, p->value_type);
-                write_u8(out, p->size);
-                if (fwrite(p->value, 1, p->size, out) != p->size) {
-                    perror("Error writing style property value"); return 1;
-                }
-            }
-             // Sanity check size
-            uint32_t style_end_pos = ftell(out);
-            if (style_end_pos - style_start_pos != st->calculated_size) {
-                fprintf(stderr, "Internal Error: Calculated size mismatch for style %d (%u != %u)\n",
-                    i, (unsigned int)(style_end_pos - style_start_pos), st->calculated_size);
-                return 1;
-            }
+    if (g_style_count > 0) {
+         if (ftell(out) != style_section_offset) { fprintf(stderr, "IntErr: Style offset %ld!=%u\n",ftell(out),style_section_offset); return 1; }
+        for (int i=0; i<g_style_count; i++) {
+            StyleEntry* st=&g_styles[i]; uint32_t start=ftell(out);
+            write_u8(out,st->id); write_u8(out,st->name_index); write_u8(out,st->property_count);
+            for (int j=0; j<st->property_count; j++) { KrbProperty* p=&st->properties[j]; write_u8(out,p->property_id); write_u8(out,p->value_type); write_u8(out,p->size); if (p->size>0 && fwrite(p->value,1,p->size,out)!=p->size) { perror("Write Style Prop"); return 1; } }
+            if ((uint32_t)ftell(out)-start != st->calculated_size) { fprintf(stderr, "IntErr: Style %d write size %u!=%u\n", i, (unsigned int)(ftell(out)-start), st->calculated_size); return 1; }
         }
     }
 
     // --- 5. Write Animation Table ---
-    // TODO: Implement Animation Table writing
-    if (animation_section_offset > 0 && g_animation_count > 0) {
-        if (ftell(out) != animation_section_offset) {
-             fprintf(stderr, "Internal Error: File pointer mismatch before writing animations (%ld != %u)\n", ftell(out), animation_section_offset);
-             return 1;
-        }
-        // Write animation data...
-    }
+    /* TODO */
 
     // --- 6. Write String Table ---
-     if (string_section_offset > 0 && g_string_count > 0) { // Check count too
-         if (ftell(out) != string_section_offset) {
-             fprintf(stderr, "Internal Error: File pointer mismatch before writing strings (%ld != %u)\n", ftell(out), string_section_offset);
-             return 1;
-         }
-        write_u16(out, (uint16_t)g_string_count);
-        for (int i = 0; i < g_string_count; i++) {
-            StringEntry* s = &g_strings[i];
-            if (s->length > 255) {
-                fprintf(stderr, "Error: String '%s' length (%zu) exceeds 255 bytes limit for length prefix.\n", s->text, s->length);
-                return 1;
-            }
-            write_u8(out, (uint8_t)s->length);
-            if (s->length > 0) {
-                if (fwrite(s->text, 1, s->length, out) != s->length) {
-                    perror("Error writing string data"); return 1;
-                }
-            }
-        }
+     if (g_string_count > 0) {
+         if (ftell(out) != string_section_offset) { fprintf(stderr, "IntErr: String offset %ld!=%u\n",ftell(out),string_section_offset); return 1; }
+        write_u16(out,(uint16_t)g_string_count);
+        for (int i=0; i<g_string_count; i++) { StringEntry* s=&g_strings[i]; write_u8(out,(uint8_t)s->length); if (s->length>0 && fwrite(s->text,1,s->length,out)!=s->length) { perror("Write Str data"); return 1; } }
     }
 
     // --- 7. Write Resource Table ---
-    // TODO: Implement Resource Table writing
-    if (resource_section_offset > 0 && g_resource_count > 0) {
-         if (ftell(out) != resource_section_offset) {
-             fprintf(stderr, "Internal Error: File pointer mismatch before writing resources (%ld != %u)\n", ftell(out), resource_section_offset);
-             return 1;
-        }
-        // Write resource data...
-    }
+    /* TODO */
 
     // --- Final Size Check ---
-    long final_pos = ftell(out);
-    if (final_pos < 0) { // Check for ftell error
-        perror("Error getting final file position");
-        return 1;
-    }
-    if ((uint32_t)final_pos != total_size) { // Cast final_pos to uint32_t for comparison
-         fprintf(stderr, "Internal Error: Final file size mismatch (%ld != %u)\n", final_pos, total_size);
-         // If this happens, an offset calculation was likely wrong.
-         return 1;
-    }
+    long final_pos = ftell(out); if (final_pos<0) { perror("Final ftell"); return 1; }
+    if ((uint32_t)final_pos != total_size) { fprintf(stderr, "IntErr: Final size %ld!=%u\n", final_pos, total_size); return 1; }
 
     return 0; // Success
 }
@@ -969,77 +727,34 @@ int write_krb_file(FILE* out) {
 
 // --- Main Function ---
 int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input.kry> <output.krb>\n", argv[0]);
-        return 1;
-    }
+    if (argc != 3) { fprintf(stderr, "Usage: %s <input.kry> <output.krb>\n", argv[0]); return 1; }
+    const char* input_file = argv[1]; const char* output_file = argv[2];
 
-    const char* input_file = argv[1];
-    const char* output_file = argv[2];
+    // *** Initialize Global Arrays ***
+    memset(g_elements, 0, sizeof(g_elements));
+    memset(g_styles, 0, sizeof(g_styles));
+    memset(g_strings, 0, sizeof(g_strings));
+    // *** End Initialization ***
 
-    FILE* in = fopen(input_file, "r");
-    if (!in) {
-        fprintf(stderr, "Error: Could not open input file '%s': %s\n", input_file, strerror(errno));
-        return 1;
-    }
-
-    // Open output in wb+ initially to allow writing header then seeking
-    FILE* out = fopen(output_file, "wb+");
-    if (!out) {
-        fprintf(stderr, "Error: Could not open output file '%s': %s\n", output_file, strerror(errno));
-        fclose(in);
-        return 1;
-    }
+    FILE* in = fopen(input_file, "r"); if (!in) { fprintf(stderr, "Error opening input '%s': %s\n", input_file, strerror(errno)); return 1; }
+    FILE* out = fopen(output_file, "wb+"); if (!out) { fprintf(stderr, "Error opening output '%s': %s\n", output_file, strerror(errno)); fclose(in); return 1; }
 
     printf("Compiling '%s' to '%s'...\n", input_file, output_file);
 
-    // Pass 1: Parse and Calculate Sizes
     printf("Pass 1: Parsing and calculating sizes...\n");
     if (parse_and_calculate_sizes(in) != 0) {
-        fprintf(stderr, "Compilation failed during Pass 1.\n");
-        fclose(in);
-        fclose(out); // Close file before cleanup
-        cleanup_resources();
-        remove(output_file); // Remove potentially incomplete file
-        return 1;
+        fprintf(stderr, "Compilation failed during Pass 1.\n"); fclose(in); fclose(out); cleanup_resources(); remove(output_file); return 1;
     }
     printf("   Found %d elements, %d styles, %d strings.\n", g_element_count, g_style_count, g_string_count);
-    // Print flags for debugging:
-    // printf("   Header Flags: 0x%04X\n", g_header_flags);
 
-
-    // Pass 2: Write Binary File
     printf("Pass 2: Writing binary file...\n");
     if (write_krb_file(out) != 0) {
-        fprintf(stderr, "Compilation failed during Pass 2.\n");
-        // File is already open from wb+ mode
-        fclose(in);
-        fclose(out); // Close file before cleanup
-        cleanup_resources();
-        // Optionally remove partially written output file
-        remove(output_file);
-        return 1;
+        fprintf(stderr, "Compilation failed during Pass 2.\n"); fclose(in); fclose(out); cleanup_resources(); remove(output_file); return 1;
     }
 
-    // Get final size *after* successful write
-    long final_size = ftell(out);
-     if (final_size < 0) {
-         perror("Error getting final file size after writing");
-         // Proceed with cleanup, but maybe return an error?
-     } else {
-        printf("Compilation successful. Output size: %ld bytes.\n", final_size);
-     }
+    long final_size = ftell(out); if (final_size<0) { perror("Final size ftell"); final_size=0; }
+    printf("Compilation successful. Output size: %ld bytes.\n", final_size);
 
-
-    // Cleanup
-    fclose(in);
-    // Ensure changes are written before closing
-    if (fflush(out) != 0) {
-        perror("Error flushing output file");
-        // Don't necessarily exit, but report error
-    }
-    fclose(out);
-    cleanup_resources();
-
+    fclose(in); if (fflush(out)!=0) { perror("Flush output"); } fclose(out); cleanup_resources();
     return 0;
 }
