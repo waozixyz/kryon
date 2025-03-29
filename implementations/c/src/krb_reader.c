@@ -1,310 +1,324 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h> // For perror
-#include "krb.h"
+#include <errno.h>   // For perror, strerror
+#include <stdbool.h> // Add include for bool type
+#include "krb.h"     // Include the header file
 
-// Internal helper to read element header (handles potential read errors)
-static int read_element_header_internal(FILE* file, KrbElementHeader* element) {
-    unsigned char buffer[16];
-    if (fread(buffer, 1, 16, file) != 16) {
-        fprintf(stderr, "Error: Failed to read 16 bytes for element header at offset %ld\n", ftell(file) - 16);
-        return 0; // Indicate failure
+// --- Helper Functions ---
+
+// Read little-endian uint16_t
+uint16_t krb_read_u16_le(const void* data) {
+    if (!data) return 0;
+    const unsigned char* p = (const unsigned char*)data;
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+// Read little-endian uint32_t
+uint32_t krb_read_u32_le(const void* data) {
+    if (!data) return 0;
+    const unsigned char* p = (const unsigned char*)data;
+    return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+}
+
+
+// --- Internal Read Helpers ---
+
+// Reads the main file header (KRB v0.2 - 42 bytes)
+static bool read_header_internal(FILE* file, KrbHeader* header) {
+    unsigned char buffer[42]; // <-- Size updated to 42
+    if (!file || !header) return false;
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        perror("Error seeking to start of file"); return false;
     }
+    size_t bytes_read = fread(buffer, 1, sizeof(buffer), file);
+    if (bytes_read < sizeof(buffer)) {
+        fprintf(stderr, "Error: Failed to read %zu-byte header, got %zu bytes\n", sizeof(buffer), bytes_read);
+        return false;
+    }
+
+    // Parse header fields using helpers for endianness
+    memcpy(header->magic, buffer + 0, 4);
+    header->version         = krb_read_u16_le(buffer + 4);
+    header->flags           = krb_read_u16_le(buffer + 6);
+    header->element_count   = krb_read_u16_le(buffer + 8);
+    header->style_count     = krb_read_u16_le(buffer + 10);
+    header->animation_count = krb_read_u16_le(buffer + 12);
+    header->string_count    = krb_read_u16_le(buffer + 14);
+    header->resource_count  = krb_read_u16_le(buffer + 16);
+    header->element_offset  = krb_read_u32_le(buffer + 18);
+    header->style_offset    = krb_read_u32_le(buffer + 22);
+    header->animation_offset= krb_read_u32_le(buffer + 26);
+    header->string_offset   = krb_read_u32_le(buffer + 30);
+    header->resource_offset = krb_read_u32_le(buffer + 34); // <-- Read new field
+    header->total_size      = krb_read_u32_le(buffer + 38); // <-- Read moved field
+
+    // Basic Validations
+    if (memcmp(header->magic, "KRB1", 4) != 0) {
+        fprintf(stderr, "Error: Invalid magic number. Expected 'KRB1', got '%.4s'\n", header->magic);
+        return false;
+    }
+    // Allow reading slightly different 0.x versions but warn
+    uint8_t major = (header->version & 0x00FF);
+    uint8_t minor = (header->version >> 8);
+    if (major != KRB_SPEC_VERSION_MAJOR || minor != KRB_SPEC_VERSION_MINOR) {
+        fprintf(stderr, "Warning: KRB version mismatch. Expected %d.%d, got %d.%d. Parsing continues but may be unreliable.\n",
+                KRB_SPEC_VERSION_MAJOR, KRB_SPEC_VERSION_MINOR, major, minor);
+    }
+    // Check reasonable offset values
+    uint32_t min_offset = sizeof(KrbHeader);
+    if (header->element_count > 0 && header->element_offset < min_offset) { fprintf(stderr, "Error: Element offset (%u) overlaps header (%u).\n", header->element_offset, min_offset); return false; }
+    if (header->style_count > 0 && header->style_offset < min_offset) { fprintf(stderr, "Error: Style offset (%u) overlaps header.\n", header->style_offset); return false; }
+    // Add checks for other offsets if needed...
+    if (header->resource_count > 0 && header->resource_offset < min_offset) { fprintf(stderr, "Error: Resource offset (%u) overlaps header.\n", header->resource_offset); return false; }
+
+
+    return true;
+}
+
+
+// Reads element header (unchanged internal logic)
+static bool read_element_header_internal(FILE* file, KrbElementHeader* element) {
+    unsigned char buffer[16];
+    if (fread(buffer, 1, 16, file) != 16) return false;
     element->type = buffer[0];
-    element->id = buffer[1];
-    element->pos_x = (uint16_t)(buffer[2] | (buffer[3] << 8));
-    element->pos_y = (uint16_t)(buffer[4] | (buffer[5] << 8));
-    element->width = (uint16_t)(buffer[6] | (buffer[7] << 8));
-    element->height = (uint16_t)(buffer[8] | (buffer[9] << 8));
+    element->id = buffer[1]; // 0-based string index
+    element->pos_x = krb_read_u16_le(buffer + 2);
+    element->pos_y = krb_read_u16_le(buffer + 4);
+    element->width = krb_read_u16_le(buffer + 6);
+    element->height = krb_read_u16_le(buffer + 8);
     element->layout = buffer[10];
-    element->style_id = buffer[11];
+    element->style_id = buffer[11]; // 1-based style ID
     element->property_count = buffer[12];
     element->child_count = buffer[13];
-    element->event_count = buffer[14]; // <<< This count is now crucial
+    element->event_count = buffer[14];
     element->animation_count = buffer[15];
-    // printf("DEBUG: Read element - type=0x%02X, style_id=%d, width=%d, height=%d, props=%d, children=%d, events=%d\n",
-    //        element->type, element->style_id, element->width, element->height, element->property_count, element->child_count, element->event_count);
-    return 1; // Indicate success
+    return true;
 }
 
-// Internal helper to read a single property (handles potential read errors)
-static int read_property_internal(FILE* file, KrbProperty* prop) {
-    unsigned char buffer[3];
-    long prop_header_offset = ftell(file); // Store position before read
-
+// Reads a single property (unchanged internal logic)
+static bool read_property_internal(FILE* file, KrbProperty* prop) {
+    unsigned char buffer[3]; // ID(1)+Type(1)+Size(1)
+    long prop_header_offset = ftell(file);
     if (fread(buffer, 1, 3, file) != 3) {
-        fprintf(stderr, "Error: Failed to read 3 bytes for property header at offset %ld\n", prop_header_offset);
-        prop->value = NULL; // Ensure value is NULL on error
-        prop->size = 0;
-        return 0; // Indicate failure
+        fprintf(stderr, "Error: Failed reading property header @ %ld\n", prop_header_offset);
+        prop->value = NULL; prop->size = 0; return false;
     }
-    prop->property_id = buffer[0];
-    prop->value_type = buffer[1];
-    prop->size = buffer[2];
-
+    prop->property_id = buffer[0]; prop->value_type = buffer[1]; prop->size = buffer[2];
+    prop->value = NULL;
     if (prop->size > 0) {
         prop->value = malloc(prop->size);
-        if (!prop->value) {
-             perror("Error: Failed to allocate memory for property value");
-             return 0; // Indicate failure
-        }
+        if (!prop->value) { perror("malloc prop value"); return false; }
         if (fread(prop->value, 1, prop->size, file) != prop->size) {
-            fprintf(stderr, "Error: Failed to read %u bytes for property value (id=0x%02X) at offset %ld\n",
-                    prop->size, prop->property_id, ftell(file) - prop->size);
-            free(prop->value);
-            prop->value = NULL;
-            return 0; // Indicate failure
+            fprintf(stderr, "Error: Failed reading %u bytes prop value (ID 0x%02X) @ %ld\n", prop->size, prop->property_id, ftell(file) - prop->size);
+            free(prop->value); prop->value = NULL; return false;
         }
-    } else {
-        prop->value = NULL; // No value data if size is 0
     }
-    // printf("DEBUG: Read property - id=0x%02X, type=0x%02X, size=%d\n", prop->property_id, prop->value_type, prop->size);
-    return 1; // Indicate success
+    return true;
 }
 
-
-// Reads the main file header. Returns 1 on success, 0 on failure.
-int read_header(FILE* file, KrbHeader* header) {
-    // --- THIS FUNCTION REMAINS UNCHANGED ---
-    unsigned char buffer[38]; // Size of KrbHeader
-    if (!file || !header) return 0;
-    if (fseek(file, 0, SEEK_SET) != 0) { perror("Error seeking to start of file"); return 0; }
-    size_t bytes_read = fread(buffer, 1, sizeof(buffer), file);
-    if (bytes_read < sizeof(buffer)) { fprintf(stderr, "Error: Failed to read %zu-byte header, got %zu bytes\n", sizeof(buffer), bytes_read); return 0; }
-    memcpy(header->magic, buffer + 0, 4);
-    header->version         = (uint16_t)(buffer[4] | (buffer[5] << 8));
-    header->flags           = (uint16_t)(buffer[6] | (buffer[7] << 8));
-    header->element_count   = (uint16_t)(buffer[8] | (buffer[9] << 8));
-    header->style_count     = (uint16_t)(buffer[10] | (buffer[11] << 8));
-    header->animation_count = (uint16_t)(buffer[12] | (buffer[13] << 8));
-    header->string_count    = (uint16_t)(buffer[14] | (buffer[15] << 8));
-    header->resource_count  = (uint16_t)(buffer[16] | (buffer[17] << 8));
-    header->element_offset  = (uint32_t)(buffer[18] | (buffer[19] << 8) | (buffer[20] << 16) | (buffer[21] << 24));
-    header->style_offset    = (uint32_t)(buffer[22] | (buffer[23] << 8) | (buffer[24] << 16) | (buffer[25] << 24));
-    header->animation_offset= (uint32_t)(buffer[26] | (buffer[27] << 8) | (buffer[28] << 16) | (buffer[29] << 24));
-    header->string_offset   = (uint32_t)(buffer[30] | (buffer[31] << 8) | (buffer[32] << 16) | (buffer[33] << 24));
-    header->total_size      = (uint32_t)(buffer[34] | (buffer[35] << 8) | (buffer[36] << 16) | (buffer[37] << 24));
-    if (memcmp(header->magic, "KRB1", 4) != 0) { fprintf(stderr, "Error: Invalid magic number. Expected 'KRB1', got '%.4s'\n", header->magic); return 0; }
-    if (header->version != 0x0001) { fprintf(stderr, "Error: Unsupported KRB version 0x%04X\n", header->version); return 0; }
-    if (header->element_offset < sizeof(KrbHeader) && header->element_count > 0) { fprintf(stderr, "Error: Element offset (%u) overlaps header.\n", header->element_offset); return 0; }
-    return 1;
-    // --- END OF UNCHANGED read_header ---
-}
-
+// --- Public API Functions ---
 
 // Reads the entire KRB document structure into memory.
-// Returns 1 on success, 0 on failure. Caller must call krb_free_document.
-int krb_read_document(FILE* file, KrbDocument* doc) {
-     if (!file || !doc) return 0;
+bool krb_read_document(FILE* file, KrbDocument* doc) {
+     if (!file || !doc) return false;
+     memset(doc, 0, sizeof(KrbDocument)); // Clear doc structure
 
-    memset(doc, 0, sizeof(KrbDocument)); // Clear doc structure
+     // Read and validate header
+     if (!read_header_internal(file, &doc->header)) {
+         return false;
+     }
+     // Store parsed version components
+     doc->version_major = (doc->header.version & 0x00FF);
+     doc->version_minor = (doc->header.version >> 8);
 
-    if (!read_header(file, &doc->header)) {
-        return 0; // Header read failed or validation failed
-    }
 
-    // --- Validate App element presence if Flag Bit 6 is set ---
-    // --- THIS SECTION REMAINS UNCHANGED ---
-    if ((doc->header.flags & FLAG_HAS_APP) && doc->header.element_count > 0) {
-        long original_pos = ftell(file);
-        if (fseek(file, doc->header.element_offset, SEEK_SET) != 0) { perror("Error seeking to element offset for App check"); return 0; }
-        unsigned char first_type;
-        if (fread(&first_type, 1, 1, file) != 1) { fprintf(stderr, "Error: Failed to read first element type for App check\n"); fseek(file, original_pos, SEEK_SET); return 0; }
-        if (first_type != ELEM_TYPE_APP) { fprintf(stderr, "Error: Header flag indicates App element, but first element is type 0x%02X, not 0x00\n", first_type); fseek(file, original_pos, SEEK_SET); return 0; }
-        if (fseek(file, original_pos, SEEK_SET) != 0) { perror("Error seeking back after App check"); return 0; }
-    }
-    // --- END OF UNCHANGED APP CHECK ---
+     // Validate App element presence if flag is set
+     if ((doc->header.flags & FLAG_HAS_APP) && doc->header.element_count > 0) {
+         long original_pos = ftell(file); // Should be right after header
+         if (fseek(file, doc->header.element_offset, SEEK_SET) != 0) { perror("seek App check"); krb_free_document(doc); return false; }
+         unsigned char first_type;
+         if (fread(&first_type, 1, 1, file) != 1) { fprintf(stderr, "read App check failed\n"); fseek(file, original_pos, SEEK_SET); krb_free_document(doc); return false; }
+         if (first_type != ELEM_TYPE_APP) { fprintf(stderr, "Error: FLAG_HAS_APP set, but first elem type 0x%02X != 0x00\n", first_type); fseek(file, original_pos, SEEK_SET); krb_free_document(doc); return false; }
+         if (fseek(file, original_pos, SEEK_SET) != 0) { perror("seek back App check"); krb_free_document(doc); return false; }
+     }
 
-    // --- Read Elements, Properties, and Events --- // <<< MODIFIED SECTION TITLE
-    if (doc->header.element_count > 0) {
-        if (doc->header.element_offset < sizeof(KrbHeader)) { /* Already checked in read_header */ return 0; }
+     // --- Read Elements, Properties, and Events ---
+     if (doc->header.element_count > 0) {
+         if (doc->header.element_offset == 0) { fprintf(stderr, "Error: Zero element offset with non-zero count.\n"); krb_free_document(doc); return false; }
 
-        // Allocate memory for element headers, property pointers, AND EVENT POINTERS <<< MODIFIED
-        doc->elements = calloc(doc->header.element_count, sizeof(KrbElementHeader));
-        doc->properties = calloc(doc->header.element_count, sizeof(KrbProperty*));
-        doc->events = calloc(doc->header.element_count, sizeof(KrbEvent*)); // <<< ALLOCATE EVENT POINTER ARRAY
-        if (!doc->elements || !doc->properties || !doc->events) { // <<< CHECK EVENT ALLOCATION
-            perror("Error: Failed to allocate memory for elements, properties, or events pointers");
-            krb_free_document(doc); // Attempt cleanup
-            return 0;
-        }
+         // Allocate memory for element headers, property pointers, and event pointers
+         doc->elements = calloc(doc->header.element_count, sizeof(KrbElementHeader));
+         doc->properties = calloc(doc->header.element_count, sizeof(KrbProperty*));
+         doc->events = calloc(doc->header.element_count, sizeof(KrbEventFileEntry*)); // Use file entry struct
+         if (!doc->elements || !doc->properties || !doc->events) {
+             perror("calloc elements/props/events ptrs"); krb_free_document(doc); return false;
+         }
 
-        // Seek to the start of the element data section
-        if (fseek(file, doc->header.element_offset, SEEK_SET) != 0) {
-             perror("Error seeking to element data section");
-             krb_free_document(doc); return 0;
-        }
+         if (fseek(file, doc->header.element_offset, SEEK_SET) != 0) {
+              perror("seek element data"); krb_free_document(doc); return false;
+         }
 
-        for (uint16_t i = 0; i < doc->header.element_count; i++) {
-            // Read the header for this element
-            if (!read_element_header_internal(file, &doc->elements[i])) {
-                fprintf(stderr, "Failed reading header for element index %u\n", i);
-                krb_free_document(doc); return 0;
-            }
+         for (uint16_t i = 0; i < doc->header.element_count; i++) {
+             // Read element header
+             if (!read_element_header_internal(file, &doc->elements[i])) {
+                 fprintf(stderr, "Failed reading header elem %u\n", i); krb_free_document(doc); return false;
+             }
 
-            // Read properties for this element (Unchanged Logic)
-            if (doc->elements[i].property_count > 0) {
-                doc->properties[i] = calloc(doc->elements[i].property_count, sizeof(KrbProperty));
-                if (!doc->properties[i]) {
-                    perror("Error: Failed to allocate property array");
-                    fprintf(stderr, "Allocation failed for element index %u\n", i);
-                    krb_free_document(doc); return 0;
-                }
-                for (uint8_t j = 0; j < doc->elements[i].property_count; j++) {
-                    if (!read_property_internal(file, &doc->properties[i][j])) {
-                         fprintf(stderr, "Failed reading property %u for element index %u\n", j, i);
-                         krb_free_document(doc); return 0;
-                    }
-                }
-            } else {
-                doc->properties[i] = NULL; // No properties for this element
-            }
-            // File pointer is now AFTER the properties for element i
-
-            // --- Read Events for this element --- // <<< NEW SECTION
-            if (doc->elements[i].event_count > 0) {
-                doc->events[i] = calloc(doc->elements[i].event_count, sizeof(KrbEvent));
-                if (!doc->events[i]) {
-                    perror("Error: Failed to allocate event array");
-                    fprintf(stderr, "Allocation failed for element index %u\n", i);
-                    krb_free_document(doc); return 0;
-                }
-                // Read all event entries for this element directly
-                size_t events_to_read = doc->elements[i].event_count;
-                size_t events_read = fread(doc->events[i], sizeof(KrbEvent), events_to_read, file);
-                if (events_read != events_to_read) {
-                    fprintf(stderr, "Error: Failed to read %zu events for element %u (read %zu)\n", events_to_read, i, events_read);
-                    krb_free_document(doc); return 0; // Frees partially read events too
-                }
-                // printf("DEBUG: Read %u events for element %u\n", doc->elements[i].event_count, i);
-            } else {
-                doc->events[i] = NULL; // No events for this element
-            }
-            // File pointer is now AFTER the events for element i
-
-            // --- Calculate and skip over Animation and Child references ONLY --- // <<< MODIFIED SECTION
-            long bytes_to_skip = 0;
-            // Spec: Animation Refs section comes after Events
-            bytes_to_skip += (long)doc->elements[i].animation_count * 2; // Size: Index(1) + Trigger(1) = 2
-            // Spec: Child Refs section comes after Animation Refs
-            bytes_to_skip += (long)doc->elements[i].child_count * 2; // Size: Child Offset(2) = 2
-
-            if (bytes_to_skip > 0) {
-                 // printf("DEBUG: Element %u skipping %ld bytes for refs (A:%u, C:%u)\n",
-                 //        i, bytes_to_skip, doc->elements[i].animation_count, doc->elements[i].child_count);
-                 if (fseek(file, bytes_to_skip, SEEK_CUR) != 0) {
-                     perror("Error skipping reference data (animations/children) after element events");
-                     fprintf(stderr, "Error occurred after element index %u\n", i);
-                     krb_free_document(doc); return 0;
+             // Read properties
+             doc->properties[i] = NULL; // Default to NULL
+             if (doc->elements[i].property_count > 0) {
+                 doc->properties[i] = calloc(doc->elements[i].property_count, sizeof(KrbProperty));
+                 if (!doc->properties[i]) { perror("calloc props elem"); fprintf(stderr, "Elem %u\n", i); krb_free_document(doc); return false; }
+                 for (uint8_t j = 0; j < doc->elements[i].property_count; j++) {
+                     if (!read_property_internal(file, &doc->properties[i][j])) {
+                          fprintf(stderr, "Failed reading prop %u elem %u\n", j, i); krb_free_document(doc); return false;
+                     }
                  }
-            }
-            // File pointer is now positioned at the start of the next element (or end of section)
-        } // End loop through elements
-    }
+             }
 
-    // --- Read Styles and their Properties ---
-    // --- THIS SECTION REMAINS UNCHANGED ---
-    if (doc->header.style_count > 0) {
-        if (doc->header.style_offset < sizeof(KrbHeader)) { fprintf(stderr, "Error: Style offset (%u) overlaps header.\n", doc->header.style_offset); krb_free_document(doc); return 0; }
-        doc->styles = calloc(doc->header.style_count, sizeof(KrbStyle));
-        if (!doc->styles) { perror("Error: Failed to allocate memory for styles"); krb_free_document(doc); return 0; }
-        if (fseek(file, doc->header.style_offset, SEEK_SET) != 0) { perror("Error seeking to style data section"); krb_free_document(doc); return 0; }
-        for (uint16_t i = 0; i < doc->header.style_count; i++) {
-            unsigned char style_header_buf[3];
-            if (fread(style_header_buf, 1, 3, file) != 3) { fprintf(stderr, "Error: Failed to read header for style index %u\n", i); krb_free_document(doc); return 0; }
-            doc->styles[i].id = style_header_buf[0];
-            doc->styles[i].name_index = style_header_buf[1];
-            doc->styles[i].property_count = style_header_buf[2];
-            doc->styles[i].properties = NULL;
-            if (doc->styles[i].property_count > 0) {
-                doc->styles[i].properties = calloc(doc->styles[i].property_count, sizeof(KrbProperty));
-                if (!doc->styles[i].properties) { perror("Error: Failed to allocate style property array"); fprintf(stderr, "Allocation failed for style index %u\n", i); krb_free_document(doc); return 0; }
-                for (uint8_t j = 0; j < doc->styles[i].property_count; j++) {
-                     if (!read_property_internal(file, &doc->styles[i].properties[j])) { fprintf(stderr, "Failed reading property %u for style index %u\n", j, i); krb_free_document(doc); return 0; }
-                }
-            }
-        }
-    }
-    // --- END OF UNCHANGED STYLES SECTION ---
+             // Read Events
+             doc->events[i] = NULL; // Default to NULL
+             if (doc->elements[i].event_count > 0) {
+                 doc->events[i] = calloc(doc->elements[i].event_count, sizeof(KrbEventFileEntry));
+                 if (!doc->events[i]) { perror("calloc events elem"); fprintf(stderr, "Elem %u\n", i); krb_free_document(doc); return false; }
+                 size_t events_to_read = doc->elements[i].event_count;
+                 size_t events_read = fread(doc->events[i], sizeof(KrbEventFileEntry), events_to_read, file);
+                 if (events_read != events_to_read) {
+                     fprintf(stderr, "Error: Read %zu/%zu events elem %u\n", events_read, events_to_read, i); krb_free_document(doc); return false;
+                 }
+             }
 
-    // TODO: Read Animations (Skipped for now)
+             // Skip Animation Refs and Child Refs
+             long bytes_to_skip = (long)doc->elements[i].animation_count * 2 // Anim Index(1)+Trigger(1)
+                                + (long)doc->elements[i].child_count * 2;   // Child Offset(2)
+             if (bytes_to_skip > 0) {
+                  if (fseek(file, bytes_to_skip, SEEK_CUR) != 0) {
+                      perror("seek skip refs"); fprintf(stderr, "Elem %u\n", i); krb_free_document(doc); return false;
+                  }
+             }
+         } // End element loop
+     }
 
-    // --- Read Strings ---
-    // --- THIS SECTION REMAINS UNCHANGED ---
-    if (doc->header.string_count > 0) {
-        if (doc->header.string_offset < sizeof(KrbHeader)) { fprintf(stderr, "Error: String offset (%u) overlaps header.\n", doc->header.string_offset); krb_free_document(doc); return 0; }
-        doc->strings = calloc(doc->header.string_count, sizeof(char*));
-        if (!doc->strings) { perror("Error: Failed to allocate strings pointer array"); krb_free_document(doc); return 0; }
-        if (fseek(file, doc->header.string_offset, SEEK_SET) != 0) { perror("Error seeking to string data section"); krb_free_document(doc); return 0; }
-        unsigned char stc_bytes[2];
-        if (fread(stc_bytes, 1, 2, file) != 2) { fprintf(stderr, "Error: Failed to read string table count bytes\n"); krb_free_document(doc); return 0; }
-        uint16_t string_table_count = (uint16_t)(stc_bytes[0] | (stc_bytes[1] << 8));
-        if (string_table_count != doc->header.string_count) {
-             fprintf(stderr, "Warning: String count in header (%u) differs from table count (%u). Using header count.\n", doc->header.string_count, string_table_count);
-             if (string_table_count < doc->header.string_count) { fprintf(stderr,"Error: String table count is less than header count. Cannot proceed reliably.\n"); krb_free_document(doc); return 0; }
-        }
-        for (uint16_t i = 0; i < doc->header.string_count; i++) {
-            uint8_t length;
-            if (fread(&length, 1, 1, file) != 1) { fprintf(stderr, "Error: Failed to read string length for index %u\n", i); krb_free_document(doc); return 0; }
-            doc->strings[i] = malloc(length + 1);
-            if (!doc->strings[i]) { perror("Error: Failed to allocate memory for string"); fprintf(stderr, "Allocation failed for string index %u\n", i); krb_free_document(doc); return 0; }
-            if (length > 0) {
-                if (fread(doc->strings[i], 1, length, file) != length) { fprintf(stderr, "Error: Failed to read %u bytes for string data for index %u\n", length, i); krb_free_document(doc); return 0; }
-            }
-            doc->strings[i][length] = '\0';
-        }
-    }
-    // --- END OF UNCHANGED STRINGS SECTION ---
+     // --- Read Styles ---
+     if (doc->header.style_count > 0) {
+         if (doc->header.style_offset == 0) { fprintf(stderr, "Error: Zero style offset with non-zero count.\n"); krb_free_document(doc); return false; }
+         doc->styles = calloc(doc->header.style_count, sizeof(KrbStyle));
+         if (!doc->styles) { perror("calloc styles"); krb_free_document(doc); return false; }
+         if (fseek(file, doc->header.style_offset, SEEK_SET) != 0) { perror("seek styles"); krb_free_document(doc); return false; }
 
-    // TODO: Read Resources (Skipped for now)
+         for (uint16_t i = 0; i < doc->header.style_count; i++) {
+             unsigned char style_header_buf[3]; // ID(1)+NameIdx(1)+PropCount(1)
+             if (fread(style_header_buf, 1, 3, file) != 3) { fprintf(stderr, "Failed read style header %u\n", i); krb_free_document(doc); return false; }
+             doc->styles[i].id = style_header_buf[0]; // 1-based ID
+             doc->styles[i].name_index = style_header_buf[1]; // 0-based index
+             doc->styles[i].property_count = style_header_buf[2];
+             doc->styles[i].properties = NULL;
 
-    return 1; // Success!
+             if (doc->styles[i].property_count > 0) {
+                 doc->styles[i].properties = calloc(doc->styles[i].property_count, sizeof(KrbProperty));
+                 if (!doc->styles[i].properties) { perror("calloc style props"); fprintf(stderr, "Style %u\n", i); krb_free_document(doc); return false; }
+                 for (uint8_t j = 0; j < doc->styles[i].property_count; j++) {
+                      if (!read_property_internal(file, &doc->styles[i].properties[j])) { fprintf(stderr, "Failed read prop %u style %u\n", j, i); krb_free_document(doc); return false; }
+                 }
+             }
+         }
+     }
+
+     // --- Read Animations (Skipped) ---
+     // TODO: Implement animation reading if needed
+
+     // --- Read Strings ---
+     if (doc->header.string_count > 0) {
+         if (doc->header.string_offset == 0) { fprintf(stderr, "Error: Zero string offset with non-zero count.\n"); krb_free_document(doc); return false; }
+         doc->strings = calloc(doc->header.string_count, sizeof(char*));
+         if (!doc->strings) { perror("calloc strings ptrs"); krb_free_document(doc); return false; }
+         if (fseek(file, doc->header.string_offset, SEEK_SET) != 0) { perror("seek strings"); krb_free_document(doc); return false; }
+
+         unsigned char stc_bytes[2]; // Read count from table start
+         if (fread(stc_bytes, 1, 2, file) != 2) { fprintf(stderr, "Failed read string table count\n"); krb_free_document(doc); return false; }
+         uint16_t table_count = krb_read_u16_le(stc_bytes);
+         if (table_count != doc->header.string_count) { fprintf(stderr, "Warning: Header string count %u != table count %u\n", doc->header.string_count, table_count); }
+         // We trust the header count for allocation, but table count could be used for read loop bounds if preferred
+
+         for (uint16_t i = 0; i < doc->header.string_count; i++) {
+             uint8_t length;
+             if (fread(&length, 1, 1, file) != 1) { fprintf(stderr, "Failed read str len %u\n", i); krb_free_document(doc); return false; }
+             doc->strings[i] = malloc(length + 1); // +1 for null terminator
+             if (!doc->strings[i]) { perror("malloc string"); fprintf(stderr, "String %u\n", i); krb_free_document(doc); return false; }
+             if (length > 0) {
+                 if (fread(doc->strings[i], 1, length, file) != length) { fprintf(stderr, "Failed read %u bytes str %u\n", length, i); krb_free_document(doc); return false; }
+             }
+             doc->strings[i][length] = '\0'; // Null terminate
+         }
+     }
+
+     // --- Read Resources --- // <<< NEW SECTION
+     if (doc->header.resource_count > 0) {
+         if (doc->header.resource_offset == 0) { fprintf(stderr, "Error: Zero resource offset with non-zero count.\n"); krb_free_document(doc); return false; }
+         doc->resources = calloc(doc->header.resource_count, sizeof(KrbResource));
+         if (!doc->resources) { perror("calloc resources"); krb_free_document(doc); return false; }
+         if (fseek(file, doc->header.resource_offset, SEEK_SET) != 0) { perror("seek resources"); krb_free_document(doc); return false; }
+
+         unsigned char resc_bytes[2]; // Read count from table start
+         if (fread(resc_bytes, 1, 2, file) != 2) { fprintf(stderr, "Failed read resource table count\n"); krb_free_document(doc); return false; }
+         uint16_t table_res_count = krb_read_u16_le(resc_bytes);
+         if (table_res_count != doc->header.resource_count) { fprintf(stderr, "Warning: Header resource count %u != table count %u\n", doc->header.resource_count, table_res_count); }
+
+         for (uint16_t i = 0; i < doc->header.resource_count; i++) {
+             unsigned char res_entry_buf[4]; // Buffer for external format: Type(1)+NameIdx(1)+Format(1)+DataIdx(1)
+             if (fread(res_entry_buf, 1, 4, file) != 4) {
+                 fprintf(stderr, "Error: Failed read resource entry %u\n", i);
+                 krb_free_document(doc); return false;
+             }
+             doc->resources[i].type = res_entry_buf[0];
+             doc->resources[i].name_index = res_entry_buf[1]; // 0-based string index
+             doc->resources[i].format = res_entry_buf[2];
+             // Assuming external format for now based on spec v0.2 and compiler impl
+             if (doc->resources[i].format == RES_FORMAT_EXTERNAL) {
+                 doc->resources[i].data_string_index = res_entry_buf[3]; // 0-based string index
+             } else if (doc->resources[i].format == RES_FORMAT_INLINE) {
+                 fprintf(stderr, "Error: Inline resource parsing not yet implemented (Res %u).\n", i);
+                 // TODO: Read size(2 bytes), read data(N bytes)
+                 krb_free_document(doc); return false;
+             } else {
+                 fprintf(stderr, "Error: Unknown resource format 0x%02X for resource %u\n", doc->resources[i].format, i);
+                 krb_free_document(doc); return false;
+             }
+         }
+     } // <<< END NEW RESOURCE SECTION
+
+     return true; // Success!
 }
 
 // Frees all memory allocated within the KrbDocument structure.
 void krb_free_document(KrbDocument* doc) {
     if (!doc) return;
 
-    // --- Free Element Data (Properties and Events) --- // <<< MODIFIED
-    if (doc->elements) { // Only proceed if elements were allocated
+    // Free Element Data (Properties and Events)
+    if (doc->elements) {
         for (uint16_t i = 0; i < doc->header.element_count; i++) {
-            // Free properties for this element
-            if (doc->properties && doc->properties[i]) { // Check properties pointer array AND specific element's array
+            // Free properties
+            if (doc->properties && doc->properties[i]) {
                  for (uint8_t j = 0; j < doc->elements[i].property_count; j++) {
                      if (doc->properties[i][j].value) {
                          free(doc->properties[i][j].value);
-                         // doc->properties[i][j].value = NULL;
                      }
                  }
                 free(doc->properties[i]);
-                // doc->properties[i] = NULL;
             }
-            // Free events for this element // <<< NEW SECTION
-            if (doc->events && doc->events[i]) { // Check events pointer array AND specific element's array
-                // KrbEvent struct itself doesn't contain pointers, just need to free the array
+            // Free events
+            if (doc->events && doc->events[i]) {
                 free(doc->events[i]);
-                // doc->events[i] = NULL;
             }
         }
     }
+    // Free top-level pointer arrays
+    if (doc->properties) free(doc->properties);
+    if (doc->events) free(doc->events);
+    if (doc->elements) free(doc->elements);
 
-    // Free the top-level pointer arrays
-    if (doc->properties) {
-        free(doc->properties);
-        // doc->properties = NULL;
-    }
-    if (doc->events) { // <<< FREE EVENT POINTER ARRAY
-        free(doc->events);
-        // doc->events = NULL;
-    }
-    if (doc->elements) {
-        free(doc->elements);
-        // doc->elements = NULL;
-    }
-
-
-    // Free style properties (Unchanged Logic)
+    // Free Styles
     if (doc->styles) {
         for (uint16_t i = 0; i < doc->header.style_count; i++) {
             if (doc->styles[i].properties) {
@@ -317,10 +331,9 @@ void krb_free_document(KrbDocument* doc) {
             }
         }
         free(doc->styles);
-        // doc->styles = NULL;
     }
 
-    // Free strings (Unchanged Logic)
+    // Free Strings
     if (doc->strings) {
         for (uint16_t i = 0; i < doc->header.string_count; i++) {
             if (doc->strings[i]) {
@@ -328,12 +341,17 @@ void krb_free_document(KrbDocument* doc) {
             }
         }
         free(doc->strings);
-        // doc->strings = NULL;
     }
 
-    // TODO: Free animations if allocated
-    // TODO: Free resources if allocated
+    // Free Resources // <<< NEW SECTION
+    if (doc->resources) {
+        // Currently KrbResource struct itself doesn't hold allocated data (paths are refs into strings array)
+        // If inline resources were implemented, their data would need freeing here.
+        free(doc->resources);
+    } // <<< END NEW RESOURCE SECTION
 
-    // Optional: Zero out header (Doesn't hurt)
-    // memset(&doc->header, 0, sizeof(KrbHeader));
+    // TODO: Free animations if allocated
+
+    // Optional: Zero out the doc struct itself after freeing members
+    // memset(doc, 0, sizeof(KrbDocument));
 }

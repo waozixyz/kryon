@@ -5,49 +5,49 @@
 #include <stdio.h>   // For FILE*
 #include <stdbool.h> // For bool type
 
-// Define MAX_ELEMENTS if not defined elsewhere, used for array sizing in renderers
+// Define MAX_ELEMENTS if not defined elsewhere
 #ifndef MAX_ELEMENTS
 #define MAX_ELEMENTS 256
 #endif
 
-// --- Constants from Specification ---
+// --- Constants from KRB v0.2 Specification ---
+
+#define KRB_SPEC_VERSION_MAJOR 0
+#define KRB_SPEC_VERSION_MINOR 2
 
 // Header Flags
 #define FLAG_HAS_STYLES     (1 << 0)
 #define FLAG_HAS_ANIMATIONS (1 << 1)
 #define FLAG_HAS_RESOURCES  (1 << 2)
-#define FLAG_COMPRESSED     (1 << 3) // Not implemented by current parser/compiler
-#define FLAG_FIXED_POINT    (1 << 4) // Indicates usage of fixed-point values
-#define FLAG_EXTENDED_COLOR (1 << 5) // Indicates usage of RGBA colors (vs palette)
-#define FLAG_HAS_APP        (1 << 6) // Indicates App element is present as element 0
+#define FLAG_COMPRESSED     (1 << 3)
+#define FLAG_FIXED_POINT    (1 << 4)
+#define FLAG_EXTENDED_COLOR (1 << 5)
+#define FLAG_HAS_APP        (1 << 6)
 // Bits 7-15 Reserved
 
-// Element Types (Matching Specification)
-#define ELEM_TYPE_APP         0x00 // Application root element
-#define ELEM_TYPE_CONTAINER   0x01 // div-like, generic container
-#define ELEM_TYPE_TEXT        0x02 // span/p-like, text content
-#define ELEM_TYPE_IMAGE       0x03 // image display
-#define ELEM_TYPE_CANVAS      0x04 // raw drawing surface
-// 0x05-0x0F Reserved for future core elements
-#define ELEM_TYPE_BUTTON      0x10 // clickable element
-#define ELEM_TYPE_INPUT       0x11 // text input field
-// 0x12-0x1F Reserved for future interactive elements
-#define ELEM_TYPE_LIST        0x20 // vertical/horizontal list
-#define ELEM_TYPE_GRID        0x21 // table-like layout
-#define ELEM_TYPE_SCROLLABLE  0x22 // scrollable container
-// 0x23-0x2F Reserved for future structural elements
-#define ELEM_TYPE_VIDEO       0x30 // video playback element
-// 0x31-0xFF Custom/Specialized elements
+// Element Types
+#define ELEM_TYPE_APP         0x00
+#define ELEM_TYPE_CONTAINER   0x01
+#define ELEM_TYPE_TEXT        0x02
+#define ELEM_TYPE_IMAGE       0x03
+#define ELEM_TYPE_CANVAS      0x04
+#define ELEM_TYPE_BUTTON      0x10
+#define ELEM_TYPE_INPUT       0x11
+#define ELEM_TYPE_LIST        0x20
+#define ELEM_TYPE_GRID        0x21
+#define ELEM_TYPE_SCROLLABLE  0x22
+#define ELEM_TYPE_VIDEO       0x30
+// 0x31-0xFF Custom/Specialized
 
-// Property IDs (Matching Specification)
+// Property IDs
 #define PROP_ID_INVALID         0x00
 #define PROP_ID_BG_COLOR        0x01
 #define PROP_ID_FG_COLOR        0x02
 #define PROP_ID_BORDER_COLOR    0x03
-#define PROP_ID_BORDER_WIDTH    0x04 // Can be Byte or EdgeInsets
+#define PROP_ID_BORDER_WIDTH    0x04
 #define PROP_ID_BORDER_RADIUS   0x05
-#define PROP_ID_PADDING         0x06 // Can be Short or EdgeInsets
-#define PROP_ID_MARGIN          0x07 // Can be Short or EdgeInsets
+#define PROP_ID_PADDING         0x06
+#define PROP_ID_MARGIN          0x07
 #define PROP_ID_TEXT_CONTENT    0x08
 #define PROP_ID_FONT_SIZE       0x09
 #define PROP_ID_FONT_WEIGHT     0x0A
@@ -65,35 +65,35 @@
 #define PROP_ID_TRANSFORM       0x16
 #define PROP_ID_SHADOW          0x17
 #define PROP_ID_OVERFLOW        0x18
-#define PROP_ID_CUSTOM          0x19 // Uses string table ref for name
-// App Specific
+#define PROP_ID_CUSTOM          0x19
+#define PROP_ID_LAYOUT_FLAGS    0x1A
 #define PROP_ID_WINDOW_WIDTH    0x20
 #define PROP_ID_WINDOW_HEIGHT   0x21
 #define PROP_ID_WINDOW_TITLE    0x22
 #define PROP_ID_RESIZABLE       0x23
 #define PROP_ID_KEEP_ASPECT     0x24
 #define PROP_ID_SCALE_FACTOR    0x25
-#define PROP_ID_ICON            0x26 // Resource index (or string index for path)
+#define PROP_ID_ICON            0x26
 #define PROP_ID_VERSION         0x27
 #define PROP_ID_AUTHOR          0x28
 // 0x29 - 0xFF Reserved
 
-// Value Types (Matching Specification)
+// Value Types
 #define VAL_TYPE_NONE       0x00
 #define VAL_TYPE_BYTE       0x01
 #define VAL_TYPE_SHORT      0x02
-#define VAL_TYPE_COLOR      0x03 // RGBA or palette index
-#define VAL_TYPE_STRING     0x04 // Index to string table (1 byte)
-#define VAL_TYPE_RESOURCE   0x05 // Index to resource table (1 byte)
-#define VAL_TYPE_PERCENTAGE 0x06 // Fixed-point (e.g., 8.8) - size depends on flag
-#define VAL_TYPE_RECT       0x07 // x,y,w,h (e.g., 4 shorts = 8 bytes)
-#define VAL_TYPE_EDGEINSETS 0x08 // top,right,bottom,left (e.g., 4 bytes)
-#define VAL_TYPE_ENUM       0x09 // Predefined options (1 byte usually)
-#define VAL_TYPE_VECTOR     0x0A // x,y coords (e.g., 2 shorts = 4 bytes)
-#define VAL_TYPE_CUSTOM     0x0B // Depends on context
+#define VAL_TYPE_COLOR      0x03
+#define VAL_TYPE_STRING     0x04
+#define VAL_TYPE_RESOURCE   0x05
+#define VAL_TYPE_PERCENTAGE 0x06
+#define VAL_TYPE_RECT       0x07
+#define VAL_TYPE_EDGEINSETS 0x08
+#define VAL_TYPE_ENUM       0x09
+#define VAL_TYPE_VECTOR     0x0A
+#define VAL_TYPE_CUSTOM     0x0B
 // 0x0C - 0xFF Reserved
 
-// Event Types (Matching Specification)
+// Event Types
 #define EVENT_TYPE_NONE     0x00
 #define EVENT_TYPE_CLICK    0x01
 #define EVENT_TYPE_PRESS    0x02
@@ -104,26 +104,40 @@
 #define EVENT_TYPE_BLUR     0x07
 #define EVENT_TYPE_CHANGE   0x08
 #define EVENT_TYPE_SUBMIT   0x09
-#define EVENT_TYPE_CUSTOM   0x0A // Uses a string table reference
+#define EVENT_TYPE_CUSTOM   0x0A
 // 0x0B-0xFF Reserved
 
-// Layout Byte Bits (Matching Specification)
-#define LAYOUT_DIRECTION_MASK 0x03 // Bits 0-1: 00=Row, 01=Col, 10=RowRev, 11=ColRev
-#define LAYOUT_ALIGNMENT_MASK 0x0C // Bits 2-3: 00=Start, 01=Center, 10=End, 11=SpaceBetween
-#define LAYOUT_WRAP_BIT       (1 << 4) // Bit 4: 0=NoWrap, 1=Wrap
-#define LAYOUT_GROW_BIT       (1 << 5) // Bit 5: 0=Fixed, 1=Grow
-#define LAYOUT_ABSOLUTE_BIT   (1 << 6) // Bit 6: 0=Flow, 1=Absolute
+// Layout Byte Bits
+#define LAYOUT_DIRECTION_MASK 0x03
+#define LAYOUT_ALIGNMENT_MASK 0x0C
+#define LAYOUT_WRAP_BIT       (1 << 4)
+#define LAYOUT_GROW_BIT       (1 << 5)
+#define LAYOUT_ABSOLUTE_BIT   (1 << 6)
 // Bit 7 Reserved
+
+// Resource Types
+#define RES_TYPE_NONE       0x00
+#define RES_TYPE_IMAGE      0x01
+#define RES_TYPE_FONT       0x02
+#define RES_TYPE_SOUND      0x03
+#define RES_TYPE_VIDEO      0x04
+#define RES_TYPE_CUSTOM     0x05
+// 0x06 - 0xFF Reserved
+
+// Resource Formats
+#define RES_FORMAT_EXTERNAL 0x00
+#define RES_FORMAT_INLINE   0x01
+
 
 // --- Data Structures ---
 
-// Ensure structs that directly map to file format are packed
 #pragma pack(push, 1)
 
+// KRB v0.2 Header Structure (42 bytes) - Matches file format exactly
 typedef struct {
     char magic[4];           // "KRB1"
-    uint16_t version;        // 0x0001 for v1.0 (Little Endian: 01 00)
-    uint16_t flags;          // Bitfield using FLAG_* constants
+    uint16_t version;        // Minor << 8 | Major (e.g., 0x0002 for 0.2)
+    uint16_t flags;
     uint16_t element_count;
     uint16_t style_count;
     uint16_t animation_count;
@@ -133,88 +147,91 @@ typedef struct {
     uint32_t style_offset;
     uint32_t animation_offset;
     uint32_t string_offset;
-    uint32_t total_size;    // Spec v1.0 puts this here (Offset 34)
-    // uint32_t resource_offset; // Not in Spec v1.0 header
+    uint32_t resource_offset; // Added for v0.2
+    uint32_t total_size;
 } KrbHeader;
 
+// Element Header (16 bytes) - Matches file format exactly
 typedef struct {
-    uint8_t type;            // Element type (using ELEM_TYPE_* constants)
-    uint8_t id;              // String table index or 0 (For Element ID name)
+    uint8_t type;
+    uint8_t id;              // 0-based string index
     uint16_t pos_x;
     uint16_t pos_y;
     uint16_t width;
     uint16_t height;
-    uint8_t layout;          // Layout properties bitfield (Uses LAYOUT_* constants)
-    uint8_t style_id;        // Style reference (1-based) or 0
+    uint8_t layout;
+    uint8_t style_id;        // 1-based style ID
     uint8_t property_count;
     uint8_t child_count;
     uint8_t event_count;
     uint8_t animation_count;
 } KrbElementHeader;
 
+// Event structure (as stored in file - 2 bytes)
+typedef struct {
+    uint8_t event_type;
+    uint8_t callback_id;   // 0-based string index
+} KrbEventFileEntry;
+
 #pragma pack(pop)
 
+
 // Structures representing data parsed into memory (don't need packing)
+
 typedef struct {
-    uint8_t property_id;     // e.g., PROP_ID_BG_COLOR, PROP_ID_WINDOW_WIDTH
-    uint8_t value_type;      // e.g., VAL_TYPE_BYTE, VAL_TYPE_COLOR, VAL_TYPE_STRING
-    uint8_t size;            // Size of value data in bytes
-    void* value;             // Pointer to allocated memory holding the raw property value
+    uint8_t property_id;
+    uint8_t value_type;
+    uint8_t size;
+    void* value;
 } KrbProperty;
 
 typedef struct {
-    uint8_t id;              // Style identifier (1-based), corresponds to index+1 in doc->styles
-    uint8_t name_index;      // String table index for style name
+    uint8_t id;
+    uint8_t name_index;
     uint8_t property_count;
-    KrbProperty* properties; // Dynamically allocated array of KrbProperty for this style
+    KrbProperty* properties;
 } KrbStyle;
 
 typedef struct {
-    uint8_t event_type;    // EVENT_TYPE_CLICK, etc.
-    uint8_t callback_id;   // String table index for callback name ("handleButtonClick")
-} KrbEvent;
+    uint8_t type;
+    uint8_t name_index;
+    uint8_t format;
+    uint8_t data_string_index; // Only if format is External
+    // void* inline_data;    // TODO for inline
+    // size_t inline_data_size; // TODO for inline
+} KrbResource;
 
 // Represents the entire parsed KRB document data in memory
 typedef struct {
-    KrbHeader header;
+    KrbHeader header; // Copy of the raw header data
 
-    // Flat array of element headers read sequentially from the file
+    // Parsed version for convenience
+    uint8_t version_major; // <-- Moved here
+    uint8_t version_minor; // <-- Moved here
+
+    // Arrays holding parsed data
     KrbElementHeader* elements;
-
-    // Array of pointers to property arrays. Indexed same as 'elements'.
-    // doc.properties[i] is a pointer to an array of KrbProperty structs for element i.
-    // If element i has no properties, doc.properties[i] will be NULL.
     KrbProperty** properties;
-
-    // Array of styles read from the file
+    KrbEventFileEntry** events;
     KrbStyle* styles;
-
-    // Array of pointers to null-terminated strings read from the file
     char** strings;
-
-    KrbEvent** events;
-    // TODO: Add fields for animations, resources if implemented
-
-    // KrbAnimation* animations;
-    // KrbResource* resources;
+    KrbResource* resources;
+    // KrbAnimation* animations; // TODO
 
 } KrbDocument;
 
 
 // --- Function Prototypes for krb_reader.c ---
 
-// Reads the entire KRB document structure into memory from the given file.
-// Allocates memory for elements, properties, styles, and strings.
-// Returns 1 on success, 0 on failure. Caller must call krb_free_document on success or failure.
-int krb_read_document(FILE* file, KrbDocument* doc);
+// Reads the entire KRB document structure into memory.
+bool krb_read_document(FILE* file, KrbDocument* doc);
 
-// Frees all memory dynamically allocated by krb_read_document within the KrbDocument structure.
-// Safe to call even if krb_read_document failed partway through.
+// Frees all memory dynamically allocated by krb_read_document.
 void krb_free_document(KrbDocument* doc);
 
-// (Optional: If you want read_header to be public, uncomment)
-// Reads only the main file header. Returns 1 on success, 0 on failure.
-// int read_header(FILE* file, KrbHeader* header);
+// Helpers for reading little-endian values
+uint16_t krb_read_u16_le(const void* data);
+uint32_t krb_read_u32_le(const void* data);
 
 
 #endif // KRB_H
