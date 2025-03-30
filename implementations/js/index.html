@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kryon JS Renderer</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* Basic page layout styles */
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        header {
+            background-color: #333;
+            color: white;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        header label, header input { margin-right: 10px; }
+        #status { font-size: 0.9em; }
+        main {
+            flex-grow: 1;
+            padding: 20px;
+            display: flex; /* Center the rendered content potentially */
+            justify-content: center;
+            align-items: flex-start; /* Align to top */
+        }
+        /* Target container for KRB content */
+        #kryon-root {
+            border: 1px solid #ccc;
+            background-color: #fff; /* Default white background */
+            /* Let KRB App element control size/bg if defined */
+            /* Example fixed size if no App element sets it */
+             /* width: 800px; */
+             /* height: 600px; */
+             overflow: hidden; /* Prevent content spillover */
+             position: relative; /* Needed for absolute positioning of children */
+             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        /* Basic KRB element defaults (can be overridden by KRB styles) */
+        #kryon-root * {
+            box-sizing: border-box; /* Essential for consistent layout */
+            margin: 0; /* KRB controls margins */
+            padding: 0; /* KRB controls padding */
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Kryon JS Renderer (KRB v0.2)</h1>
+        <div>
+            <label for="krbFileInput">Load KRB File:</label>
+            <input type="file" id="krbFileInput" accept=".krb">
+            <span id="status">Initializing...</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- The KRB content will be rendered inside this div -->
+        <div id="kryon-root">
+            <p style="padding: 20px; color: #555;">Please select a .krb file using the button above.</p>
+        </div>
+    </main>
+
+    <!-- Load JS modules -->
+    <script type="module" src="main.js"></script>
+
+</body>
+</html>
