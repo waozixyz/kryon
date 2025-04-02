@@ -39,7 +39,7 @@ This table shows the completion status of various language/renderer implementati
 | **C / Term**   |    ✅    |       〰️      |    ❌   |     ❌    |
 | **JS / Web**   |    ❌    |       ❌      |    ❌   |     ❌    |
 
-*(Status as of [Date - you might want to update this periodically])*
+*(Status as of 02/04/2025)*
 
 ## Build and Run
 
