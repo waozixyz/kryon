@@ -33,10 +33,10 @@ This table shows the completion status of various language/renderer implementati
 *   〰️: Partially working or implemented, but may have issues or missing features.
 *   ❌: Not implemented or currently broken.
 
-| Implementation | `button` | `hello_world` | `image` | `tab_bar` |
+| Implementation | `hello_world` | `button` | `image` | `tab_bar` |
 |----------------|:--------:|:-------------:|:-------:|:---------:|
 | **C / Raylib** |    ✅    |       ✅      |    ✅   |     ❌    |
-| **C / Term**   |    ❌    |       ❌      |    ❌   |     ❌    |
+| **C / Term**   |    ✅    |       〰️      |    ❌   |     ❌    |
 | **JS / Web**   |    ❌    |       ❌      |    ❌   |     ❌    |
 
 *(Status as of [Date - you might want to update this periodically])*
