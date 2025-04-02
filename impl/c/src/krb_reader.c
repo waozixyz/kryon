@@ -77,24 +77,43 @@ static bool read_header_internal(FILE* file, KrbHeader* header) {
 }
 
 
-// Reads element header (unchanged internal logic)
+// Reads element header (17 bytes for v0.3)
 static bool read_element_header_internal(FILE* file, KrbElementHeader* element) {
-    unsigned char buffer[16];
-    if (fread(buffer, 1, 16, file) != 16) return false;
-    element->type = buffer[0];
-    element->id = buffer[1]; // 0-based string index
-    element->pos_x = krb_read_u16_le(buffer + 2);
-    element->pos_y = krb_read_u16_le(buffer + 4);
-    element->width = krb_read_u16_le(buffer + 6);
-    element->height = krb_read_u16_le(buffer + 8);
-    element->layout = buffer[10];
-    element->style_id = buffer[11]; // 1-based style ID
-    element->property_count = buffer[12];
-    element->child_count = buffer[13];
-    element->event_count = buffer[14];
-    element->animation_count = buffer[15];
+    if (!file || !element) {
+        fprintf(stderr, "Error: NULL file or element pointer passed to read_element_header_internal.\n");
+        return false;
+    }
+
+    // Read all 17 bytes directly into the struct
+    // This relies on KrbElementHeader being defined with `#pragma pack(push, 1)` in krb.h
+    size_t expected_size = sizeof(KrbElementHeader);
+    if (expected_size != 17) {
+         // Safety check in case the struct definition wasn't updated correctly
+         fprintf(stderr, "Error: KrbElementHeader size mismatch! Expected 17, got %zu. Check krb.h definition and packing.\n", expected_size);
+         return false;
+    }
+
+    size_t bytes_read = fread(element, 1, expected_size, file);
+    if (bytes_read != expected_size) {
+        fprintf(stderr, "Error: Failed to read %zu bytes for element header, got %zu.\n", expected_size, bytes_read);
+        if (feof(file)) { fprintf(stderr, "  (End of file reached prematurely)\n"); }
+        else if (ferror(file)) { perror("  (File read error)"); }
+        return false;
+    }
+
+    // Correct endianness for multi-byte fields AFTER reading the whole struct buffer
+    // Assumes krb_read_u16_le can correctly read from potentially unaligned memory
+    // (which is generally okay on x86 but good practice to handle safely if needed).
+    // It reads bytes directly, so alignment isn't usually an issue here.
+    element->pos_x = krb_read_u16_le(&element->pos_x);
+    element->pos_y = krb_read_u16_le(&element->pos_y);
+    element->width = krb_read_u16_le(&element->width);
+    element->height = krb_read_u16_le(&element->height);
+    // Single byte fields (type, id, layout, style_id, counts) are already correct endianness
+
     return true;
 }
+
 
 // Reads a single property (unchanged internal logic)
 static bool read_property_internal(FILE* file, KrbProperty* prop) {

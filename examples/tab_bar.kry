@@ -1,0 +1,66 @@
+@include "../widgets/tab_bar.kry" 
+
+style "app_theme" {
+    background_color: #202028FF
+    text_color: #EAEAF0FF     
+}
+
+style "content_panel_style" {
+     background_color: #2A2A32FF
+     layout: center 
+     border_width: 0   
+}
+
+App {
+    window_width: 360
+    window_height: 480
+    window_title: "Bottom Tab Example"
+    resizable: false
+    style: "app_theme"
+    layout: center grow
+
+    Container { 
+        id: "main_content_area"
+        style: "content_panel_style" 
+
+        Container { 
+            id: "page_home" 
+            Text { text: "Home Page Content" font_size: 18 } 
+        }
+        Container { 
+            id: "page_search" 
+            Text { text: "Search Results Area" font_size: 18 } 
+        }
+        Container { 
+            id: "page_profile" 
+            # visible: false # Conceptually hidden
+        }
+    }
+
+    TabBar {
+        id: "app_bottom_navigation"
+        position: "bottom"  
+
+        Button {
+            id: "tab_home"
+            style: "tab_item_style_active_base" 
+            width: 120 
+            text: "Home"
+            onClick: "showHomePage" 
+        }
+        Button {
+            id: "tab_search"
+            style: "tab_item_style_base" 
+            width: 120
+            text: "Search"
+            onClick: "showSearchPage"
+        }
+        Button {
+            id: "tab_profile"
+            style: "tab_item_style_base" 
+            width: 120
+            text: "Profile"
+            onClick: "showProfilePage"
+        }
+    }
+}

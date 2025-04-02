@@ -13,7 +13,7 @@
 // --- Constants from KRB v0.2 Specification ---
 
 #define KRB_SPEC_VERSION_MAJOR 0
-#define KRB_SPEC_VERSION_MINOR 2
+#define KRB_SPEC_VERSION_MINOR 3
 
 // Header Flags
 #define FLAG_HAS_STYLES     (1 << 0)
@@ -151,7 +151,7 @@ typedef struct {
     uint32_t total_size;
 } KrbHeader;
 
-// Element Header (16 bytes) - Matches file format exactly
+// Element Header (17 bytes)
 typedef struct {
     uint8_t type;
     uint8_t id;              // 0-based string index
@@ -165,6 +165,7 @@ typedef struct {
     uint8_t child_count;
     uint8_t event_count;
     uint8_t animation_count;
+    uint8_t custom_prop_count; 
 } KrbElementHeader;
 
 // Event structure (as stored in file - 2 bytes)
