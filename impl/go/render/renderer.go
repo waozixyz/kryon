@@ -11,36 +11,43 @@ const (
 	BaseFontSize        = 20 // Mirror C define
 )
 
+
+// Event details stored per element
+type EventCallbackInfo struct {
+	EventType   krb.EventType // e.g., EVENT_TYPE_CLICK
+	HandlerName string 
+}
+
 type RenderElement struct {
-	Header         krb.ElementHeader
-	OriginalIndex  int
-	Text           string
-	BgColor        rl.Color
-	FgColor        rl.Color
-	BorderColor    rl.Color
-	BorderWidths   [4]uint8 // [T, R, B, L]
-	TextAlignment  uint8
-	IsInteractive  bool
-	ResourceIndex  uint8
-	TextureLoaded  bool
-	Texture        rl.Texture2D
+    Header        krb.ElementHeader
+    OriginalIndex int
+    Parent        *RenderElement
+    Children      []*RenderElement
 
-	// Tree Structure
-	Parent   *RenderElement
-	Children []*RenderElement
+    // Visuals
+    BgColor       rl.Color
+    FgColor       rl.Color
+    BorderColor   rl.Color
+    BorderWidths  [4]uint8 // T, R, B, L
+    TextAlignment uint8    // 0: Start, 1: Center, 2: End
+    Text          string   // Resolved text content
 
-	// --- Layout Calculation Fields ---
-	// Calculated during Layout Pass (PerformLayout)
-	RenderX    int
-	RenderY    int
-	RenderW    int // Final Width
-	RenderH    int // Final Height
-	IntrinsicW int // Natural width (content, children) before constraints/grow
-	IntrinsicH int // Natural height (content, children) before constraints/grow
-	// Add Padding/Margin fields if KRB/Styles support them
-	// Padding [4]uint8 // Example
-	// Margin [4]uint8 // Example
-	// PositionHint string // If compiler/PrepareTree adds it later
+    // Resources
+    ResourceIndex uint8
+    Texture       rl.Texture2D
+    TextureLoaded bool
+
+    // Layout Results
+    RenderX int
+    RenderY int
+    RenderW int
+    RenderH int
+    IntrinsicW int
+    IntrinsicH int
+
+    // Interaction & Events
+    IsInteractive bool
+    EventHandlers []EventCallbackInfo
 }
 
 // WindowConfig holds application-level settings derived from the KRB App element.

@@ -3,11 +3,10 @@ package raylib
 
 import (
 	"encoding/binary"
-	"fmt"
+	"os"
 	"log"
 	"math"
-	"path/filepath" // Use path/filepath for cross-platform paths
-
+	"path/filepath" 
 	rl "github.com/gen2brain/raylib-go/raylib"
 	"github.com/waozixyz/kryon/impl/go/krb"
 	"github.com/waozixyz/kryon/impl/go/render"
@@ -22,13 +21,15 @@ type RaylibRenderer struct {
 	krbFileDir     string               // Directory of the loaded KRB file for relative paths
 	scaleFactor    float32              // Store effective scale factor
 	docRef         *krb.Document        // Reference to the parsed document needed by helpers
+	eventHandlerMap map[string]func()
 }
 
 // NewRaylibRenderer creates a new Raylib renderer instance.
 func NewRaylibRenderer() *RaylibRenderer {
 	return &RaylibRenderer{
 		loadedTextures: make(map[uint8]rl.Texture2D),
-		scaleFactor:    1.0, // Default
+		scaleFactor:    1.0, 
+        eventHandlerMap: make(map[string]func()),
 	}
 }
 
@@ -45,95 +46,94 @@ func (r *RaylibRenderer) Init(config render.WindowConfig) error {
 	// SetExitKey(0) // Optional: disable ESC closing window if handling manually
 	return nil
 }
+// render/raylib/raylib_renderer.go
 
-// PrepareTree processes the KRB document, initializes RenderElements, and builds the tree structure.
+// Replace the ENTIRE PrepareTree function with this:
 func (r *RaylibRenderer) PrepareTree(doc *krb.Document, krbFilePath string) ([]*render.RenderElement, render.WindowConfig, error) {
 	if doc == nil || doc.Header.ElementCount == 0 {
 		log.Println("PrepareTree: No elements in document.")
 		return nil, r.config, nil
 	}
-	r.docRef = doc // Store reference for helpers
+	r.docRef = doc
 
-	var err error
-	r.krbFileDir, err = filepath.Abs(filepath.Dir(krbFilePath))
-	if err != nil {
-		return nil, r.config, fmt.Errorf("failed to get absolute path for KRB directory: %w", err)
-	}
-	log.Printf("PrepareTree: KRB Base Directory: %s", r.krbFileDir)
+	// Determine base directory for resolving EXTERNAL resources.
+	// If KRB is embedded, krbFilePath might be "." or empty. Use CWD.
+	// If KRB is loaded from file, use that file's directory.
+	if krbFilePath == "." || krbFilePath == "" {
+        var err error
+        r.krbFileDir, err = os.Getwd() // Use current working dir as base
+        if err != nil {
+             log.Printf("WARN PrepareTree: Could not get working directory for resource path: %v", err)
+             r.krbFileDir = "." // Fallback
+        }
+    } else { // A potentially real path was provided
+        var err error
+	    // Try to get absolute directory of the provided path
+        absDir, err := filepath.Abs(filepath.Dir(krbFilePath))
+	    if err != nil {
+		    log.Printf("WARN PrepareTree: Failed to get absolute path for KRB directory '%s': %v. Using relative.", krbFilePath, err)
+            r.krbFileDir = filepath.Dir(krbFilePath) // Use relative as fallback
+	    } else {
+            r.krbFileDir = absDir
+        }
+    }
+	log.Printf("PrepareTree: Base Directory for Resources: %s", r.krbFileDir)
+
 
 	r.elements = make([]render.RenderElement, doc.Header.ElementCount)
 	r.roots = nil // Reset roots
 
 	// --- Initialize Defaults ---
-	windowConfig := render.DefaultWindowConfig() // Start with base defaults
-	windowConfig.DefaultBg = rl.Black             // Specific default for this renderer
+	windowConfig := render.DefaultWindowConfig()
+	windowConfig.DefaultBg = rl.Black
 	defaultFg := rl.RayWhite
 	defaultBorder := rl.Gray
 	defaultBorderWidth := uint8(0)
-	defaultTextAlign := uint8(0) // Left
+	defaultTextAlign := uint8(0)
 
 	// --- Pass 1: Process App Element and Initialize Defaults ---
 	var appElement *render.RenderElement
 	if (doc.Header.Flags&krb.FlagHasApp) != 0 && doc.Header.ElementCount > 0 && doc.Elements[0].Type == krb.ElemTypeApp {
-		appElement = &r.elements[0] // Point to the first element in our slice
-		appElement.Header = doc.Elements[0] // Copy header data
+		appElement = &r.elements[0]
+		appElement.Header = doc.Elements[0]
 		appElement.OriginalIndex = 0
 
-		// Apply App Style first, as it might change the default colors etc.
 		style, ok := findStyle(doc, appElement.Header.StyleID)
 		if ok {
-			log.Printf("PrepareTree: Applying App Style %d to defaults", appElement.Header.StyleID)
 			applyStyleProperties(style.Properties, doc, &windowConfig.DefaultBg, &defaultFg, &defaultBorder, &defaultBorderWidth, &defaultTextAlign)
-		} else if appElement.Header.StyleID != 0 {
-			log.Printf("Warning: App element references invalid Style ID %d", appElement.Header.StyleID)
-		}
+		} else if appElement.Header.StyleID != 0 { log.Printf("Warning: App element references invalid Style ID %d", appElement.Header.StyleID) }
 
-		// Apply App Direct Properties to WindowConfig (overriding style effects on defaults)
 		if len(doc.Properties) > 0 && len(doc.Properties[0]) > 0 {
-			log.Printf("PrepareTree: Applying App Direct Properties (Count=%d)", len(doc.Properties[0]))
-			// Apply to windowConfig first
 			applyDirectPropertiesToConfig(doc.Properties[0], doc, &windowConfig)
-			// Also apply visual props to the App element itself (though often less relevant)
 			applyDirectPropertiesToElement(doc.Properties[0], doc, appElement)
 		}
 
-		// Set App element's visuals based on final defaults/props (usually just BG)
 		appElement.BgColor = windowConfig.DefaultBg
-		appElement.FgColor = defaultFg // Not usually drawn for App
+		appElement.FgColor = defaultFg
 		appElement.BorderColor = defaultBorder
 		appElement.BorderWidths = [4]uint8{defaultBorderWidth, defaultBorderWidth, defaultBorderWidth, defaultBorderWidth}
 		appElement.TextAlignment = defaultTextAlign
 
-		r.scaleFactor = windowConfig.ScaleFactor // Update renderer scale factor
+		r.scaleFactor = windowConfig.ScaleFactor
 
 		log.Printf("PrepareTree: Processed App. Window:%dx%d Title:'%s' Scale:%.2f Resizable:%t",
 			windowConfig.Width, windowConfig.Height, windowConfig.Title, windowConfig.ScaleFactor, windowConfig.Resizable)
 
-	} else {
-		log.Println("PrepareTree: No App element found, using default window config.")
-		// Use the initial default config calculated above
-	}
-	r.config = windowConfig // Store final config
+	} else { log.Println("PrepareTree: No App element found, using default window config.") }
+	r.config = windowConfig
 
 	// --- Pass 2: Initialize remaining RenderElements ---
 	for i := 0; i < int(doc.Header.ElementCount); i++ {
-		currentEl := &r.elements[i] // Get pointer to modify element in slice
+		currentEl := &r.elements[i]
 
-		// If App was already processed, ensure header/index are set correctly
 		if appElement != nil && i == 0 {
-			if currentEl.Header.Type == 0 { // If not already initialized
-				currentEl.Header = appElement.Header
-				currentEl.OriginalIndex = 0
-				// Visuals were set above
-			}
-			// Continue to next element if App is fully handled
-			// Note: If App properties were set via applyDirectPropertiesToElement, they are here.
-			// We need to decide if non-app elements inherit App's *direct* visual props
-			// or just the modified *defaults*. Sticking to defaults.
-		} else { // Initialize non-App element or if no App element
+            if currentEl.Header.Type == 0 {
+                currentEl.Header = appElement.Header
+                currentEl.OriginalIndex = 0
+            }
+		} else {
 			currentEl.Header = doc.Elements[i]
 			currentEl.OriginalIndex = i
-			// Initialize visuals from final defaults
 			currentEl.BgColor = windowConfig.DefaultBg
 			currentEl.FgColor = defaultFg
 			currentEl.BorderColor = defaultBorder
@@ -142,53 +142,72 @@ func (r *RaylibRenderer) PrepareTree(doc *krb.Document, krbFilePath string) ([]*
 		}
 
 		currentEl.IsInteractive = (currentEl.Header.Type == krb.ElemTypeButton || currentEl.Header.Type == krb.ElemTypeInput)
-		currentEl.ResourceIndex = render.InvalidResourceIndex // Default
+		currentEl.ResourceIndex = render.InvalidResourceIndex
 
-		// Apply Style (overrides defaults)
 		style, ok := findStyle(doc, currentEl.Header.StyleID)
 		if ok {
-			// Apply style props to the element's current visual properties
 			applyStylePropertiesToElement(style.Properties, doc, currentEl)
-		} else if currentEl.Header.StyleID != 0 && !(appElement != nil && i == 0) { // Don't warn again for App
-			log.Printf("Warning: Element %d references invalid Style ID %d", i, currentEl.Header.StyleID)
-		}
+		} else if currentEl.Header.StyleID != 0 && !(appElement != nil && i == 0) { log.Printf("Warning: Element %d references invalid Style ID %d", i, currentEl.Header.StyleID) }
 
-		// Apply Direct Properties (override defaults and style)
 		if len(doc.Properties) > i && len(doc.Properties[i]) > 0 {
 			applyDirectPropertiesToElement(doc.Properties[i], doc, currentEl)
 		}
 
-		// Resolve Text Content (reads PropIDTextContent from direct/style if needed)
-		resolveElementText(doc, currentEl, style, ok) // Pass style info
+        // *** ADDED: Resolve Event Handlers ***
+        currentEl.EventHandlers = nil // Ensure slice is empty initially
+        if doc.Events != nil && currentEl.OriginalIndex < len(doc.Events) && doc.Events[currentEl.OriginalIndex] != nil {
+            krbEvents := doc.Events[currentEl.OriginalIndex]
+            for _, krbEvent := range krbEvents {
+                if int(krbEvent.CallbackID) < len(doc.Strings) {
+                    handlerName := doc.Strings[krbEvent.CallbackID]
+                    // Assuming EventCallbackInfo is defined in the 'render' package
+                    currentEl.EventHandlers = append(currentEl.EventHandlers, render.EventCallbackInfo{
+                        EventType:   krbEvent.EventType,
+                        HandlerName: handlerName,
+                    })
+                     log.Printf("DEBUG PREPARE: Elem %d assigned Event: Type=%d, Handler='%s'",
+                         currentEl.OriginalIndex, krbEvent.EventType, handlerName)
+                } else {
+                     log.Printf("WARN PREPARE: Elem %d has invalid event callback string index %d",
+                         currentEl.OriginalIndex, krbEvent.CallbackID)
+                }
+            }
+        }
+        // *** END: Resolve Event Handlers ***
 
-		// Resolve Image Source (reads PropIDImageSource from direct/style if needed)
-		resolveElementImageSource(doc, currentEl, style, ok) // Pass style info
+		resolveElementText(doc, currentEl, style, ok)
+		resolveElementImageSource(doc, currentEl, style, ok)
 
 	} // End loop initializing elements
 
 	// --- Pass 3: Build Parent/Child Tree ---
 	log.Println("PrepareTree: Building element tree...")
-	parentStack := make([]*render.RenderElement, 0, 10)
+	parentStack := make([]*render.RenderElement, 0, 10) // Using slice as stack
 	for i := 0; i < int(doc.Header.ElementCount); i++ {
 		currentEl := &r.elements[i]
-		// Pop stack until parent has room
 		for len(parentStack) > 0 {
 			parent := parentStack[len(parentStack)-1]
-			if len(parent.Children) >= int(parent.Header.ChildCount) { parentStack = parentStack[:len(parentStack)-1] } else { break }
+			// Check original header child count
+			if len(parent.Children) >= int(parent.Header.ChildCount) {
+				parentStack = parentStack[:len(parentStack)-1] // Pop
+			} else {
+				break
+			}
 		}
-		// Assign parent / add to roots
 		if len(parentStack) > 0 {
 			parent := parentStack[len(parentStack)-1]
 			currentEl.Parent = parent
-			parent.Children = append(parent.Children, currentEl)
+			parent.Children = append(parent.Children, currentEl) // Add child
 		} else {
-			r.roots = append(r.roots, currentEl)
+			r.roots = append(r.roots, currentEl) // Add root
 		}
-		// Push if expects children
-		if currentEl.Header.ChildCount > 0 { parentStack = append(parentStack, currentEl) }
+		if currentEl.Header.ChildCount > 0 {
+			parentStack = append(parentStack, currentEl) // Push if expects children
+		}
 	}
 	log.Printf("PrepareTree: Finished building tree. Found %d root(s).", len(r.roots))
 	if len(r.roots) == 0 && doc.Header.ElementCount > 0 { log.Println("ERROR: No root elements found, but elements exist!") }
+
 
 	// --- Pass 4: Load Textures ---
 	log.Println("PrepareTree: Loading textures...")
@@ -201,18 +220,23 @@ func (r *RaylibRenderer) PrepareTree(doc *krb.Document, krbFilePath string) ([]*
 
 			if res.Format == krb.ResFormatExternal {
 				if int(res.NameIndex) >= len(doc.Strings) { log.Printf("ERROR: Res %d invalid name index %d", el.ResourceIndex, res.NameIndex); continue }
-				fullPath := filepath.Join(r.krbFileDir, doc.Strings[res.NameIndex])
+				resourceName := doc.Strings[res.NameIndex]
+				fullPath := filepath.Join(r.krbFileDir, resourceName) // Use resolved base path
 				texture := rl.LoadTexture(fullPath)
 				if rl.IsTextureReady(texture) { el.Texture = texture; el.TextureLoaded = true; r.loadedTextures[el.ResourceIndex] = texture; log.Printf("  Loaded texture Elem %d (Res %d): '%s' -> OK", el.OriginalIndex, el.ResourceIndex, fullPath) } else { log.Printf("  FAILED loading texture: %s", fullPath); el.TextureLoaded = false }
 			} else if res.Format == krb.ResFormatInline {
                 log.Printf("  Loading inline texture Elem %d (Res %d) Size: %d", el.OriginalIndex, el.ResourceIndex, res.InlineDataSize)
 				if res.InlineData != nil && res.InlineDataSize > 0 {
-					img := rl.LoadImageFromMemory(".png", res.InlineData, int32(len(res.InlineData))) // Assume PNG format for inline
+					ext := ".png" // Default guess
+                    if int(res.NameIndex) < len(doc.Strings) && doc.Strings[res.NameIndex] != "" {
+                        ext = filepath.Ext(doc.Strings[res.NameIndex])
+                    }
+					img := rl.LoadImageFromMemory(ext, res.InlineData, int32(len(res.InlineData)))
 					if rl.IsImageReady(img) {
 						texture := rl.LoadTextureFromImage(img)
 						rl.UnloadImage(img)
 						if rl.IsTextureReady(texture) { el.Texture = texture; el.TextureLoaded = true; r.loadedTextures[el.ResourceIndex] = texture; log.Printf("    -> OK (ID: %d, %dx%d)", texture.ID, texture.Width, texture.Height)} else { log.Printf("    -> FAILED creating texture from inline image"); el.TextureLoaded = false }
-					} else { log.Printf("    -> FAILED loading inline image from memory"); el.TextureLoaded = false }
+					} else { log.Printf("    -> FAILED loading inline image from memory (format '%s')", ext); el.TextureLoaded = false }
 				} else { log.Printf("    -> FAILED: Inline data is nil or zero size."); el.TextureLoaded = false }
 			} else { log.Printf("WARN: Unknown resource format %d for image resource %d", res.Format, el.ResourceIndex) }
 		}
@@ -409,14 +433,6 @@ func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, par
         }
     } // End if ChildCount > 0
 
-
-	// Final Debug log
-	log.Printf("DEBUG LAYOUT: Elem %d (Type %d) Final: Render=(%d,%d %dx%d) Intrinsic=(%d,%d) Header=(%d,%d %s) ParentArea=(%d,%d %dx%d)",
-        el.OriginalIndex, el.Header.Type, el.RenderX, el.RenderY, el.RenderW, el.RenderH,
-        el.IntrinsicW, el.IntrinsicH, el.Header.Width, el.Header.Height,
-        map[bool]string{true:"Abs", false:"Flow"}[isEffectivelyAbsolute(el)],
-        parentContentX, parentContentY, parentContentW, parentContentH)
-
 } // End PerformLayout
 
 func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, parentClientOriginY, availableW, availableH int, scale float32, doc *krb.Document) {
@@ -477,7 +493,6 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 
 		extraSpace := availableSpace - totalFlowIntrinsicSize
 		if extraSpace < 0 {
-			log.Printf("DEBUG LAYOUTCHILD: Elem %d - Not enough space for flow children (Need %d, Have %d)", parent.OriginalIndex, totalFlowIntrinsicSize, availableSpace)
 			extraSpace = 0
 		}
 
@@ -595,6 +610,15 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 		// Pass the parent's content box origin and size as the reference area
 		PerformLayout(child, parentContentX, parentContentY, availableW, availableH, scale, doc)
 	}
+}
+
+func (r *RaylibRenderer) RegisterEventHandler(name string, handler func()) {
+    if name == "" || handler == nil {
+        log.Printf("WARN RENDERER: Attempted to register invalid event handler ('%s')", name)
+        return
+    }
+    log.Printf("DEBUG RENDERER: Registering event handler '%s'", name)
+    r.eventHandlerMap[name] = handler
 }
 
 
@@ -728,18 +752,54 @@ func (r *RaylibRenderer) ShouldClose() bool { return rl.WindowShouldClose() }
 func (r *RaylibRenderer) BeginFrame() { rl.BeginDrawing(); rl.ClearBackground(r.config.DefaultBg) }
 func (r *RaylibRenderer) EndFrame() { rl.EndDrawing() }
 func (r *RaylibRenderer) PollEvents() {
-	mousePos := rl.GetMousePosition(); cursor := rl.MouseCursorDefault
+	mousePos := rl.GetMousePosition()
+	cursor := rl.MouseCursorDefault
+	mouseClicked := rl.IsMouseButtonPressed(rl.MouseButtonLeft)
+    clickedElementFound := false // Prevent multiple clicks per frame
+
+	// Iterate top-down (reverse render order / Z-index approx)
 	for i := len(r.elements) - 1; i >= 0; i-- {
 		el := &r.elements[i]
+
+		// Check only visible, interactive elements
 		if el.IsInteractive && el.RenderW > 0 && el.RenderH > 0 {
 			bounds := rl.NewRectangle(float32(el.RenderX), float32(el.RenderY), float32(el.RenderW), float32(el.RenderH))
-			if rl.CheckCollisionPointRec(mousePos, bounds) { cursor = rl.MouseCursorPointingHand; break }
-		}
-	}
-	rl.SetMouseCursor(cursor)
-    // Add click/key handling here if needed
-}
 
+			if rl.CheckCollisionPointRec(mousePos, bounds) {
+				cursor = rl.MouseCursorPointingHand // Set cursor for hover
+
+				// Check for click only if we haven't processed one yet this frame
+				if mouseClicked && !clickedElementFound {
+					log.Printf("DEBUG EVENT: Click detected within bounds of Elem %d", el.OriginalIndex)
+                    clickedElementFound = true // Mark click as handled
+
+					// Find and execute the CLICK handler for this element
+                    // Iterate through handlers attached to this specific element
+					for _, eventInfo := range el.EventHandlers {
+						// Check if the handler is for a CLICK event
+                        if eventInfo.EventType == krb.EventTypeClick {
+                            // Look up the Go function associated with the handler name
+							handlerFunc, found := r.eventHandlerMap[eventInfo.HandlerName]
+							if found && handlerFunc != nil {
+								log.Printf("INFO EVENT: Executing click handler '%s' for Elem %d", eventInfo.HandlerName, el.OriginalIndex)
+								handlerFunc() // Execute the Go function
+							} else {
+								log.Printf("WARN EVENT: Click handler func not registered for name '%s' on Elem %d", eventInfo.HandlerName, el.OriginalIndex)
+							}
+                            // Assuming one click handler per element type for now
+							break // Stop checking handlers for this element once click is handled
+						}
+					} // End loop through element's event handlers
+				} // End if mouseClicked
+
+                // Element found under cursor, don't check elements below it for hover/click
+                break // Exit the loop through all elements
+			} // end collision check
+		} // end interactive check
+	} // end element loop
+
+	rl.SetMouseCursor(cursor) // Set the cursor based on hover state
+}
 
 func applyStyleProperties(props []krb.Property, doc *krb.Document,
 	defaultBg, defaultFg, defaultBorder *rl.Color, // Pointers to default colors
