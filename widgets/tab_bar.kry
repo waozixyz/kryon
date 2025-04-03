@@ -5,7 +5,6 @@
 # Users can apply their own styles using `style:` or `bar_style:` on the <TabBar> usage.
 
 style "tab_bar_style_base_row" {
-    # Default style for horizontal orientation
     background_color: #1A1A1AFF 
     height: 50                 
     layout: row                # Arrange tab items horizontally
@@ -31,9 +30,8 @@ style "tab_item_style_base" {
     # property_padding: 5
 }
 
-style "tab_item_style_active_base" extends "tab_item_style_base" { 
-    # Default style for the *active* item inside the TabBar.
-    # Runtime logic is responsible for swapping styles on items.
+style "tab_item_style_active_base" { 
+    extends: "tab_item_style_base"
     background_color: #5070A0FF 
     text_color: #FFFFFFFF     
 }

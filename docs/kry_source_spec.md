@@ -66,18 +66,56 @@ Properties modify the appearance or behavior of an element. They are specified w
 
 ## 6. Styles (`style`)
 
-Reusable blocks of properties.
+Reusable blocks of properties that can be applied to elements. Styles enhance modularity and consistency.
 
 *   **Syntax:**
     ```kry
     style "style_name" {
+        # Optional: Inherit properties from a base style
+        extends: "base_style_name" 
+
+        # Properties defined in this block
         propertyName: value
-        propertyName: value
-        # Optional: Inherit from another style
-        # extends: "base_style_name" 
+        propertyName: value 
+        # ... more properties
     }
     ```
-*   **Usage:** Applied to an element using the `style: "style_name"` property. Properties defined directly on the element override those from the applied style.
+*   **Inheritance (`extends`):**
+    *   A style definition can optionally include **one** `extends: "base_style_name"` property as its **first** property (conventionally).
+    *   The `base_style_name` must refer to another style defined elsewhere (or included).
+    *   The compiler will first copy all properties from the `base_style_name`.
+    *   Then, any properties defined directly within the current `style "style_name"` block will be applied, **overriding** any properties with the same name inherited from the base style.
+    *   Inheritance can be chained (e.g., Style C extends Style B, which extends Style A).
+    *   The compiler **must** detect and report errors for:
+        *   Undefined `base_style_name`.
+        *   Cyclic dependencies (e.g., Style A extends Style B, and Style B extends Style A).
+*   **Usage:** Applied to an element using the `style: "style_name"` property. Properties defined directly on the element override those from the applied style (including any inherited properties).
+*   **KRB Mapping:** Style inheritance is resolved entirely by the **compiler**. The final `.krb` file contains `Style Blocks` with the fully resolved set of properties for each style ID. The runtime does not need to know about the `extends` relationship.
+
+*   **Example:**
+    ```kry
+    # Base button style
+    style "button_base" {
+        background_color: #555555FF
+        text_color: #EEEEEEFF
+        border_width: 1
+        border_color: #333333FF
+    }
+
+    # Primary button inherits from base and overrides colors
+    style "button_primary" {
+        extends: "button_base" # Inherit properties first
+        background_color: #007BFFFF # Override base
+        text_color: #FFFFFFFF     # Override base
+        border_color: #0056B3FF # Override base
+    }
+
+    # Usage
+    Button {
+        style: "button_primary" 
+        text: "Submit"
+    } 
+    ```
 
 ## 7. File Inclusion (`@include`)
 

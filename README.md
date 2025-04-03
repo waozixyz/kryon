@@ -35,7 +35,7 @@ This table shows the completion status of various language/renderer implementati
 
 | Implementation | `hello_world` | `button` | `image` | `tab_bar` |
 |----------------|:--------:|:-------------:|:-------:|:---------:|
-| **C / Raylib** |    ✅    |       ✅      |    ✅   |     ❌    |
+| **C / Raylib** |    ✅    |       〰️      |    ✅   |     ❌    |
 | **C / Term**   |    ✅    |       〰️      |    ❌   |     ❌    |
 | **Go / Raylib**|    ✅    |       〰️      |    ❌   |     ❌    |
 | **JS / Web**   |    〰️    |       〰️      |    〰️   |     ❌    |

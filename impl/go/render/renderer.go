@@ -11,32 +11,36 @@ const (
 	BaseFontSize        = 20 // Mirror C define
 )
 
-// RenderElement holds processed data for a single element ready for rendering.
 type RenderElement struct {
-	Header         krb.ElementHeader // Copy of original header
-	OriginalIndex  int               // Index in the original krb.Document.Elements
-	Text           string            // Resolved text content (if applicable)
-	BgColor        rl.Color          // Resolved background color
-	FgColor        rl.Color          // Resolved foreground/text color
-	BorderColor    rl.Color          // Resolved border color
-	BorderWidths   [4]uint8          // Resolved border widths [T, R, B, L] (scaled?)
-	TextAlignment  uint8             // Resolved text alignment (0=L, 1=C, 2=R) - Use constants later?
-	IsInteractive  bool              // E.g., Button, Input
-	ResourceIndex  uint8             // Resolved resource index (0-based), or InvalidResourceIndex
-	TextureLoaded  bool              // Flag if texture was successfully loaded
-	Texture        rl.Texture2D      // Raylib texture (if applicable) - Specific to Raylib backend for now
+	Header         krb.ElementHeader
+	OriginalIndex  int
+	Text           string
+	BgColor        rl.Color
+	FgColor        rl.Color
+	BorderColor    rl.Color
+	BorderWidths   [4]uint8 // [T, R, B, L]
+	TextAlignment  uint8
+	IsInteractive  bool
+	ResourceIndex  uint8
+	TextureLoaded  bool
+	Texture        rl.Texture2D
 
 	// Tree Structure
 	Parent   *RenderElement
-	Children []*RenderElement // Slice is more idiomatic Go
+	Children []*RenderElement
 
-	// Runtime Layout Calculation Cache
-	RenderX int // Final calculated X position on screen
-	RenderY int // Final calculated Y position on screen
-	RenderW int // Final calculated width on screen
-	RenderH int // Final calculated height on screen
-    IntrinsicW int // Calculated natural width before layout constraints
-    IntrinsicH int // Calculated natural height before layout constraints
+	// --- Layout Calculation Fields ---
+	// Calculated during Layout Pass (PerformLayout)
+	RenderX    int
+	RenderY    int
+	RenderW    int // Final Width
+	RenderH    int // Final Height
+	IntrinsicW int // Natural width (content, children) before constraints/grow
+	IntrinsicH int // Natural height (content, children) before constraints/grow
+	// Add Padding/Margin fields if KRB/Styles support them
+	// Padding [4]uint8 // Example
+	// Margin [4]uint8 // Example
+	// PositionHint string // If compiler/PrepareTree adds it later
 }
 
 // WindowConfig holds application-level settings derived from the KRB App element.

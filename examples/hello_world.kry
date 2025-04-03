@@ -22,7 +22,7 @@ App {
     author: "WaoziXyz"
     style: "appstyle"
     
-    Container {
+    Container { 
         pos_x: 200
         pos_y: 100
         width: 200

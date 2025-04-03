@@ -6,9 +6,9 @@ style "app_theme" {
 }
 
 style "content_panel_style" {
-     background_color: #2A2A32FF
-     layout: center 
-     border_width: 0   
+    background_color: #2A2A32FF
+    layout: center 
+    border_width: 0   
 }
 
 App {
@@ -25,11 +25,17 @@ App {
 
         Container { 
             id: "page_home" 
-            Text { text: "Home Page Content" font_size: 18 } 
+            Text {
+                text: "Home Page Content"
+                font_size: 18
+            } 
         }
         Container { 
             id: "page_search" 
-            Text { text: "Search Results Area" font_size: 18 } 
+            Text {
+                text: "Search Results Area"
+                font_size: 18
+            } 
         }
         Container { 
             id: "page_profile" 
