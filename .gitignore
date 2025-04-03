@@ -4,3 +4,4 @@ krb_renderer
 button_example
 kryon-raylib
 kryon_renderer
+dist/*
