@@ -320,31 +320,95 @@ func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, par
 	el.IntrinsicH = int(math.Round(float64(intrinsicH) * float64(scale)))
 
 
-    // --- 2. Determine Render Size ---
-	finalW := el.IntrinsicW
+	// --- 2. Determine Render Size ---
+	intrinsicW = el.IntrinsicW // Use the value calculated in Step 1
+	intrinsicH = el.IntrinsicH // Use the value calculated in Step 1
+
+	finalW := intrinsicW
 	if el.Header.Width > 0 { finalW = scaled(el.Header.Width) }
-	finalH := el.IntrinsicH
+	finalH := intrinsicH
 	if el.Header.Height > 0 { finalH = scaled(el.Header.Height) }
 
-	// *** FIX: Root element ALWAYS takes the full parent size ***
-	if isRoot {
-		finalW = parentContentW
-		finalH = parentContentH
-	} else {
-		// Non-root elements clamp size if flow and not growing
-		if !isEffectivelyAbsolute(el) && !el.Header.LayoutGrow() {
-			if finalW > parentContentW { finalW = parentContentW }
-			if finalH > parentContentH { finalH = parentContentH }
-		}
+	// Determine if this element *should* grow based on its own flag and context
+	// Note: isEffectivelyAbsolute also checks PosX/Y != 0, which shouldn't prevent growth usually.
+	// We primarily care about the LayoutAbsoluteBit for preventing flow/growth participation.
+	isFlowElement := !el.Header.LayoutAbsolute()
+	shouldGrow := el.Header.LayoutGrow() && isFlowElement
+
+	parentDir := krb.LayoutDirRow // Default if no parent (e.g., root)
+	if el.Parent != nil {
+		parentDir = el.Parent.Header.LayoutDirection()
 	}
 
-    // Ensure minimum 1x1 size if needed
-    if finalW <= 0 { finalW = 1 } // Simplified check for min size
-	if finalH <= 0 { finalH = 1 }
+	if isRoot {
+		// Root element ALWAYS takes the full parent size (initial window size)
+		finalW = parentContentW
+		finalH = parentContentH
+		log.Printf("DEBUG LAYOUT ROOT: Elem %d (Root) Size forced to Parent: %dx%d", el.OriginalIndex, finalW, finalH)
+	} else { // --- Non-root element logic ---
+		if shouldGrow {
+			log.Printf("DEBUG LAYOUT GROW: Elem %d applying growth in ParentDir %d. Parent Avail: %dx%d", el.OriginalIndex, parentDir, parentContentW, parentContentH)
+			// If growing, PREEMPTIVELY take available parent space along the parent's main axis
+			// ONLY IF the dimension is auto-sized (0).
+			if parentDir == krb.LayoutDirRow || parentDir == krb.LayoutDirRowReverse {
+				if el.Header.Width == 0 { // Grow width if auto-width
+					finalW = parentContentW
+					log.Printf("  -> Growing Width to Parent: %d", finalW)
+				}
+				// Growing elements often fill the cross-axis too, if auto-sized
+				if el.Header.Height == 0 {
+					finalH = parentContentH
+					log.Printf("  -> Growing Height (Cross-Axis) to Parent: %d", finalH)
+				}
 
+			} else { // Column or ColumnReverse
+				if el.Header.Height == 0 { // Grow height if auto-height
+					finalH = parentContentH
+					log.Printf("  -> Growing Height to Parent: %d", finalH)
+				}
+				// Growing elements often fill the cross-axis too, if auto-sized
+				if el.Header.Width == 0 {
+					finalW = parentContentW
+					log.Printf("  -> Growing Width (Cross-Axis) to Parent: %d", finalW)
+				}
+			}
+			// Clamp negative sizes potentially introduced by border calc later? No, do clamping after final size.
+		}
+
+		// Clamp size to parent if NOT growing and part of the flow
+		if !shouldGrow && isFlowElement {
+			// Clamp calculated size (intrinsic or explicit) to parent's content area
+			originalW := finalW
+			originalH := finalH
+			if finalW > parentContentW { finalW = parentContentW }
+			if finalH > parentContentH { finalH = parentContentH }
+			if finalW != originalW || finalH != originalH {
+				log.Printf("DEBUG LAYOUT CLAMP: Elem %d (Non-Grow) clamped from %dx%d to %dx%d (Parent Avail: %dx%d)", el.OriginalIndex, originalW, originalH, finalW, finalH, parentContentW, parentContentH)
+			}
+		}
+		// Absolute elements keep their calculated size (intrinsic or explicit), their position is handled later.
+	} // --- End non-root element logic ---
+
+
+	// Ensure minimum 1x1 size AFTER growth/clamping is applied
+	// Important: Check *before* assigning to el.RenderW/H
+	finalWBeforeMin := finalW
+	finalHBeforeMin := finalH
+	if finalW <= 0 { finalW = 1 }
+	if finalH <= 0 { finalH = 1 }
+	if finalW != finalWBeforeMin || finalH != finalHBeforeMin {
+		log.Printf("DEBUG LAYOUT MINSIZE: Elem %d adjusted from %dx%d to %dx%d", el.OriginalIndex, finalWBeforeMin, finalHBeforeMin, finalW, finalH)
+	}
+
+	// Store the final calculated size for rendering and child layout
 	el.RenderW = finalW
 	el.RenderH = finalH
 
+	// Log final decision for this element before laying out children
+	log.Printf("DEBUG LAYOUT SIZE: Elem %d (Type %d) ParentAvail=(%dx%d) Intrinsic=(%d,%d) HeaderSize=(%d,%d) Grow=%t Final RenderSize=(%d,%d)",
+		el.OriginalIndex, el.Header.Type, parentContentW, parentContentH, el.IntrinsicW, el.IntrinsicH, el.Header.Width, el.Header.Height, el.Header.LayoutGrow(), el.RenderW, el.RenderH)
+
+		
 
 	// --- 3. Determine Render Position ---
 	finalX := 0
