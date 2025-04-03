@@ -40,8 +40,6 @@ This table shows the completion status of various language/renderer implementati
 | **Go / Raylib**|    ✅    |       ✅      |    ❌   |     〰️    |
 | **JS / Web**   |    〰️    |       〰️      |    〰️   |     ❌    |
 
-*(Status as of 02/04/2025)*
-
 ## Build and Run
 
 **Prerequisite:** You need to build the Kryon Compiler (`kryc`) from its [separate repository](https://github.com/waozixyz/kryc) first. Use the compiler to convert `.kry` source files (from `examples/`) into `.krb` binary files if they don't already exist or if you modify the source.
