@@ -195,3 +195,54 @@ App {
     }
 }
 ```
+
+## 11. Standard Component Library (Widgets)
+
+While Kryon allows defining custom components using `Define`, a standard library of common UI widgets is typically provided for convenience. These are usually defined in separate `.kry` files (e.g., within a `widgets/` directory) and included using `@include`.
+
+These standard components are built using the core elements (`Container`, `Button`, `Text`, etc.) and are compiled down to standard KRB elements by the Kryon compiler. Developers use them like any other element in their `.kry` source.
+
+**Note:** The exact set of standard components may vary slightly between Kryon implementations or versions, but common examples include:
+
+*   **`TabBar`**: A container typically placed at the top or bottom to hold navigation buttons (tabs).
+    *   **Common Usage:**
+        ```kry
+        @include "widgets/tab_bar.kry" // Or similar path
+
+        App {
+            # ... App properties ...
+            layout: column # Usually needed for top/bottom bars
+
+            Container { # Main content area
+                 # ... page content ...
+                 layout: grow # Make content area fill remaining space
+            }
+
+            TabBar {
+                id: "my_nav"
+                position: "bottom" # Hint for placement ("top", "bottom", "left", "right")
+                # Optional: bar_style: "custom_tab_bar_style"
+
+                Button { text: "Home"; style: "tab_item_style"; onClick: "..." }
+                Button { text: "Search"; style: "tab_item_style"; onClick: "..." }
+                # ... more Buttons ...
+            }
+        }
+        ```
+    *   **Key Properties (Handled by Compiler):**
+        *   `position`: (String) Hints to the compiler to adjust parent layout and element order. Common values: `"top"`, `"bottom"`, `"left"`, `"right"`. Default: `"bottom"`. This property is *consumed* by the compiler and does not become a direct KRB property.
+        *   `orientation`: (String) Controls the internal layout of the tab items within the bar. Common values: `"row"`, `"column"`. Default: `"row"`. Affects which default style (`tab_bar_style_base_row` or `tab_bar_style_base_column`) is applied if `bar_style` or `style` are not provided.
+        *   `bar_style`: (StyleID String) Allows applying a specific custom style directly to the underlying `Container` of the TabBar, overriding default styles.
+        *   `style`: (StyleID String) Also applies a style to the underlying `Container`. If both `style` and `bar_style` are present, `bar_style` might take precedence (compiler implementation detail).
+    *   **Children:** Typically expects `Button` elements (or similar interactive elements) as children, representing the individual tabs. Developers are responsible for styling these child items (e.g., using `tab_item_style_base` or custom styles).
+
+*   **`Card`**: (Example) A container with predefined padding, border radius, and often a subtle background or shadow, used to group related content visually.
+    *   **Common Usage:** `Card { width: 200; Text { ... } }`
+    *   **Key Properties:** Inherits `Container` properties. Might have specific style defaults.
+
+*   **`Dialog`**: (Example) A modal or non-modal window overlay.
+    *   *(Details would follow)*
+
+*   *(... Add other standard widgets like `Checkbox`, `RadioButton`, `Slider`, `ProgressBar` etc., as they are defined)*
+
+**Compiler Responsibility:** The Kryon compiler is responsible for expanding these component usages (`<TabBar>`, `<Card>`, etc.) into their underlying structure of core elements (`Container`, `Button`, etc.) and resolving their specific properties (like `position`) into appropriate layout flags and element ordering within the final KRB file. The KRB runtime typically only needs to understand the core elements and standard properties.
