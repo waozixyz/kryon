@@ -1,62 +1,53 @@
 # widgets/tab_bar.kry
 
-# --- Base Styles ---
-
+# Style for the TabBar Container itself (Row version)
 style "tab_bar_style_base_row" {
-    background_color: #1A1A1AFF
-    height: 50
-    layout: row # Arrange tab items horizontally
-    # Optional: property_gap: 4
+    background_color: "#3E2723FF" # Dark Brown Tab Bar BG
+    height: 50                    # Fixed height for the bar
+    layout: row center            # Lay out children (buttons) in a row, center vertically
+    # No gap needed if buttons grow to fill space
 }
 
 style "tab_bar_style_base_column" {
-    # Style for vertical orientation
-    background_color: #1A1A1AFF
-    width: 60
-    layout: column # Arrange tab items vertically
-    # Optional: property_gap: 4
+    background_color: "#3E2723FF"
+    width: 80
+    layout: column center
 }
 
 style "tab_item_style_base" {
-    # Default style for items inside the TabBar (e.g., Buttons).
-    background_color: #404040FF
+    background_color: "#A1887FFF"
     border_width: 0
-    text_alignment: center
-    text_color: #E0E0E0FF
-    # Optional: property_padding: 5
+    text_alignment: center 
+    text_color: "#EFEBE4FF"
+    layout: grow  
+    height: 50
 }
 
+# Style for ACTIVE Tab Items (Buttons)
 style "tab_item_style_active_base" {
-    # Style for the active/selected tab item.
-    extends: "tab_item_style_base"
-    background_color: #5070A0FF
-    text_color: #FFFFFFFF
+    extends: "tab_item_style_base"  # Inherits layout:grow and height:50
+
+    # --- Overrides ---
+    background_color: "#6D4C41FF"   # Different OPAQUE background for active state - Medium Brown
+    text_color: "#FFFFFF"           # White text for active state
 }
 
 # --- Widget Definition: TabBar ---
-# Compiler expands <TabBar> usage into a Container.
 Define TabBar {
-
-    # Accepted properties for <TabBar> usage.
     Properties {
-        # Layout *inside* the bar: "row" or "column". Affects default style.
         orientation: String = "row"
-
-        # Placement hint *relative to siblings*: "top", "bottom", "left", "right".
-        # Used by compiler to adjust parent layout & child order. Consumed by compiler.
         position: String = "bottom"
-
-        # Optional style ID to override default bar container style.
         bar_style: StyleID = ""
     }
 
-    # Root Element Structure (Result of compiler expansion)
+    # Root Element Structure (Compiler expands <TabBar> usage into this Container)
     Container {
-        # Compiler determines the final 'style' property based on usage:
-        # 1. 'bar_style' property from usage.
-        # 2. 'style' property directly on <TabBar> usage tag.
-        # 3. Default style based on 'orientation' ('tab_bar_style_base_row' or '_column').
-        # Compiler merges standard properties (id, width, height) from usage here.
-        # Compiler inserts children (e.g., Buttons) from usage inside this Container.
+        # Compiler determines style property based on usage/orientation ('tab_bar_style_base_row' likely here)
+        # Compiler merges standard properties (id) from usage here.
+        # Compiler inserts children (Buttons) from usage inside this Container.
+        # The Container's height is set by the style (50px).
+        # The Container's width will likely be set by the parent (App) or stretch.
+        # The layout: row center from the style arranges the Button children.
+        # The Buttons will use layout:grow to divide the horizontal space.
     }
 }

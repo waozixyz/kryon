@@ -1,79 +1,87 @@
-@include "../widgets/tab_bar.kry" 
+# examples/tab_bar.kry
+@include "../widgets/tab_bar.kry" # Ensure this path is correct
 
 style "app_theme" {
-    background_color: #202028FF
-    text_color: #EAEAF0FF     
+    background_color: "#EFEBE4FF"
+    text_color: "#4B3832FF"
 }
 
 style "content_panel_style" {
-    background_color: #2A2A32FF
-    layout: center 
-    border_width: 0   
+    background_color: "#D7CCC8FF" # Light brownish grey
+    border_width: 0
 }
 
+# --- App Structure ---
 App {
     window_width: 360
     window_height: 480
-    window_title: "Bottom Tab Example"
+    window_title: "Coffee Tab Example"
     resizable: false
     style: "app_theme"
-    layout: column 
+    layout: column # App arranges children vertically
 
-    Container { 
+    # Main content area
+    Container {
         id: "main_content_area"
-        style: "content_panel_style" 
-        layout: grow center 
-        
-        Container { 
-            id: "page_home" 
+        style: "content_panel_style"
+        layout: grow center # Let this container grow vertically and center its content
+
+        # --- Page Containers ---
+        Container {
+            id: "page_home"
+            layout: center # Center the child Text element
             Text {
                 text: "Home Page Content"
                 font_size: 18
-            } 
+            }
         }
-        Container { 
-            id: "page_search" 
-            visible: false 
+        Container {
+            id: "page_search"
+            visible: false
+            layout: center # Center the child Text element
             Text {
                 text: "Search Results Area"
                 font_size: 18
-            } 
+            }
         }
-        Container { 
-            id: "page_profile" 
+        Container {
+            id: "page_profile"
             visible: false
+            layout: center # Center the child Text element
             Text {
                 text: "Profile Page Details"
                 font_size: 18
             }
         }
-    } 
+    }
 
+    # Tab Bar - Placed as the last child in the App's column layout
     TabBar {
         id: "app_bottom_navigation"
-        position: "bottom"  
+        position: "bottom" # Custom property for the renderer handler
 
+        # Tab Items (Buttons)
+        # Width is now handled by the layout system (grow) defined in the style
         Button {
             id: "tab_home"
-            style: "tab_item_style_active_base" 
-            width: 120 
+            style: "tab_item_style_active_base" # Active style initially
+            # REMOVED: width: 120
             text: "Home"
-            onClick: "showHomePage" 
+            onClick: "showHomePage"
         }
         Button {
             id: "tab_search"
-            style: "tab_item_style_base" 
-            width: 120
+            style: "tab_item_style_base"
+            # REMOVED: width: 120
             text: "Search"
             onClick: "showSearchPage"
         }
         Button {
             id: "tab_profile"
-            style: "tab_item_style_base" 
-            width: 120
+            style: "tab_item_style_base"
+            # REMOVED: width: 120
             text: "Profile"
             onClick: "showProfilePage"
         }
-    } 
-
-} 
+    }
+}
