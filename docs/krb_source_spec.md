@@ -20,11 +20,14 @@ Kryon consists of two distinct formats and typically a compiler:
     *   Files use the `.krb` extension.
     *   Optimized for parsing and rendering on resource-constrained systems.
 
+
 3.  **Kryon Compiler (`kryonc`)**:
     *   Translates `.kry` source files into `.krb` binary files.
-    *   Resolves source-level abstractions (like `Define`d components and their custom properties specified in `.kry`) into the standard elements and properties defined in this KRB specification.
+    *   Expands `.kry` `Define` component usage into standard KRB elements.
+    *   Maps standard `.kry` properties to standard KRB properties.
+    *   **Crucially, encodes component-specific properties (like `position` from a `TabBar`) declared in `.kry` `Properties` blocks into the KRB `Custom Properties` section for later interpretation.**
 
-**Runtime Expectation:** Runtimes parsing `.krb` files primarily need to understand the standard elements and properties defined in this specification. While KRB v0.3 allows encoding custom types and properties, runtimes are not required to understand arbitrary custom data to be considered compliant with the base specification.
+**Runtime Expectation:** Runtimes parsing `.krb` files must understand the standard elements and properties defined here. KRB v0.3 introduces an optional **Custom Properties** section within Element Blocks. This allows compilers to embed application-specific key-value data (like `position="bottom"` originating from a custom `.kry` component like `<TabBar>`) directly into the KRB. **Crucially, the interpretation and handling of these Custom Properties is the responsibility of the specific runtime environment.** Standard runtimes might ignore custom properties they don't recognize. Compiler expansion (`Define` in `.kry`) that resolves components entirely into standard elements *without* relying on runtime interpretation of custom properties remains the recommended approach for maximum portability, but this Custom Properties mechanism enables runtime-specific handling when required.
 
 ## Design Goals
 *   **Universal Compatibility**: Works across diverse computing environments, including 8-bit systems.
@@ -77,7 +80,7 @@ Kryon consists of two distinct formats and typically a compiler:
 
 Starts at `Element Offset` from the header. Contains `Element Count` blocks.
 
-### Element Header (17 bytes) <!-- Size Increased v0.3 -->
+### Element Header (17 bytes)
 
 | Offset | Size | Field                 | Description                                                | Example             |
 |--------|------|-----------------------|------------------------------------------------------------|---------------------|
@@ -93,14 +96,14 @@ Starts at `Element Offset` from the header. Contains `Element Count` blocks.
 | 13     | 1    | Child Count           | Number of subsequent child references                      | `0x03` (3)          |
 | 14     | 1    | Event Count           | Number of subsequent event references                      | `0x01` (1)          |
 | 15     | 1    | Animation Count       | Number of subsequent animation references                  | `0x00` (0)          |
-| **16** | **1**| **Custom Prop Count** | **Number of *custom* key-value properties following standard props.** | **`0x01` (1)**      | <!-- Added v0.3 -->
+| **16** | **1**| **Custom Prop Count** | **Number of *custom* key-value properties following standard props.** | **`0x01` (1)**      | 
 
 **Element Types** (`ELEM_TYPE_*`):
 *   **Core Elements** (0x00–0x0F): `0x00`:App, `0x01`:Container, `0x02`:Text, `0x03`:Image, `0x04`:Canvas, `0x05`–`0x0F`:Reserved
 *   **Interactive Elements** (0x10–0x1F): `0x10`:Button, `0x11`:Input, `0x12`–`0x1F`:Reserved
 *   **Structural Elements** (0x20–0x2F): `0x20`:List, `0x21`:Grid, `0x22`:Scrollable, `0x23`–`0x2F`:Reserved
 *   **Specialized Elements** (0x30–0xFF): `0x30`:Video, `0x31`–`0xFF`: **Custom**
-    *   **Note on Custom Types (v0.3):** Types `0x31-0xFF` denote application-specific elements. Their rendering and behavior depend on runtime interpretation. The `ID` field (String Table index) may be used by the runtime to identify the specific custom type by name. **Using compiler abstractions (`Define` in `.kry`) that resolve to standard KRB elements (`Container`, `Button`, etc.) is strongly recommended for portability.** Base-compliant runtimes may ignore elements of unknown custom types.
+    *   **Note on Custom Types (v0.3):** Types `0x31-0xFF` denote application-specific elements requiring full runtime interpretation. The `ID` field (String Table index) may identify the type. **Using standard element types (like `Container`) combined with the Custom Properties section below is often preferred over defining entirely new `ELEM_TYPE_CUSTOM` types for component representation if only specific behaviors (like positioning) need runtime interpretation.** Standard runtimes may ignore unknown custom types.
 
 **Layout Byte**: (*Defines the value in the Element Header's `Layout` field*)
 *   Bits 0-1: Direction (`00`:Row, `01`:Column, `10`:RowReverse, `11`:ColumnReverse)
@@ -143,20 +146,28 @@ Follow the element header, `Property Count` entries.
 *   `0x0B`: Custom (Indicates application-specific interpretation, often used with `PROP_ID_CUSTOM_DATA_BLOB`)
 *   Others Reserved
 
-### Custom Properties (New Section v0.3)
+### Custom Properties (Optional - New in v0.3)
 
-Follow the standard properties section. Contains `Custom Prop Count` entries. This section provides a structured way to embed key-value data directly in the KRB for runtime use.
+Follows the Standard Properties section. Contains `Custom Prop Count` entries. This section provides a structured way to embed key-value data directly in the KRB **for runtime interpretation**.
 
-**Note:** Prefer resolving component properties during compilation (`.kry` -> `.krb`) into standard KRB properties where possible to maintain runtime simplicity and portability. Use this section only when the runtime *must* directly access specific named custom data associated with an element.
+**Purpose:** Allows custom components defined in `.kry` (e.g., using `Define`) to pass component-specific properties (like `position`, `orientation`, custom data bindings) through the compiler into the `.krb` file. The compiler translates these into key-value pairs here.
+
+**Runtime Responsibility:** The runtime environment is responsible for:
+1.  Checking for the presence of custom properties on elements it processes.
+2.  Interpreting the meaning of specific keys (e.g., "position", "customBehavior").
+3.  Implementing the corresponding layout, rendering, or behavioral logic based on the values found.
+    *   *Example:* A runtime might check any `Container` for a `custom_prop[key="position"]`. If found, it applies specific layout logic to that container relative to its siblings based on the property's value ("top", "bottom", etc.).
+
+**Note:** Using this section ties the `.krb` file's full behavior to a runtime capable of interpreting these specific custom property keys. Prefer compiler resolution into standard properties whenever possible for better portability.
 
 Each custom property entry structure:
 
 | Offset   | Size     | Field      | Description                                           | Example                      |
 |----------|----------|------------|-------------------------------------------------------|------------------------------|
-| 0        | 1        | Key Index  | String table index (0-based) for the property key name | `0x05` ("partNumber")        |
-| 1        | 1        | Value Type | Data type (`VAL_TYPE_*`) for the value                | `0x02` (Short)               |
-| 2        | 1        | Value Size | Value size in bytes (e.g., 2 for Short)               | `0x02` (2 bytes)             |
-| 3        | Variable | Value      | Property value data according to Type and Size        | `0x39 0x05` (Value 1337)     |
+| 0        | 1        | Key Index  | String table index (0-based) for the property key name | `0x05` ("position")        |
+| 1        | 1        | Value Type | Data type (`VAL_TYPE_*`) for the value                | `0x04` (String Index)        |
+| 2        | 1        | Value Size | Value size in bytes (e.g., 1 for String Index)        | `0x01` (1 byte)             |
+| 3        | Variable | Value      | Property value data according to Type and Size        | `0x08` ("bottom" string index) |
 
 ### Events
 
@@ -268,6 +279,7 @@ For each resource entry:
 
 ## Stack-Based Considerations & Optimizations
 
+*   **Custom Property Interpretation Overhead:** Relying heavily on runtime interpretation of Custom Properties adds complexity and potential performance cost to the runtime compared to handling pre-resolved standard properties. Use judiciously for behaviors the compiler cannot fully resolve.
 *   **Minimize Custom Data:** Relying heavily on `ELEM_TYPE_CUSTOM` or the Custom Properties section increases runtime complexity and KRB file size. Prefer compiler abstractions (`Define` in `.kry`) that resolve to standard KRB elements and properties whenever possible.
 *   Use 8-bit indices where feasible (String Table, Resource Table indices if counts are low).
 *   Simplify numeric values (palette colors via `FLAG_EXTENDED_COLOR=0`, frame-based time).
@@ -279,4 +291,4 @@ For each resource entry:
 
 ## Conclusion
 
-Kryon KRB v0.3 defines a specification for a universal, compact binary UI format. It builds upon v0.2 by adding an optional mechanism for encoding structured custom key-value properties directly within element blocks. This feature is intended for scenarios requiring direct runtime access to application-specific data. However, for building complex, reusable UI components and achieving maximum portability, the **strongly recommended approach remains leveraging the Kryon Source Language's (`.kry`) component definition features (`Define`) and allowing the compiler to expand these into standard KRB v0.3 elements and properties.** This strategy maintains runtime simplicity and aligns with Kryon's core design goals of minimalism and performance across diverse platforms.
+Kryon KRB v0.3 defines a specification for a universal, compact binary UI format. It adds an optional **Custom Properties** mechanism allowing component-specific data defined in `.kry` to be passed into the binary file. **The interpretation and handling of this custom data is explicitly the responsibility of the target runtime environment.** While compiler expansion into purely standard elements/properties remains ideal for portability, this feature enables richer runtime-specific behaviors when needed.

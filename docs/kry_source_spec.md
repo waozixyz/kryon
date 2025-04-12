@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-The Kryon Source Language (`.kry`) is a human-readable, text-based language designed for defining user interfaces. It prioritizes simplicity and expressiveness, allowing developers to describe UI structure, styling, and basic interactions. `.kry` files are processed by a Kryon Compiler (e.g., `kryonc`) to produce the compact Kryon Binary Format (`.krb`) for deployment on target systems.
+The Kryon Source Language (`.kry`) is a human-readable, text-based language designed for defining user interfaces. It prioritizes simplicity and expressiveness, allowing developers to describe UI structure, styling, and basic interactions. `.kry` files are processed by a Kryon Compiler (e.g., `kryonc`) to produce the compact Kryon Binary Format (`.krb`) for deployment on target systems. The runtime environment then interprets the `.krb` file to render the UI and handle component-specific logic.
 
 This document specifies version 1.0 of the `.kry` language.
 
@@ -12,6 +12,7 @@ This document specifies version 1.0 of the `.kry` language.
 *   **Expressiveness:** Allow definition of common UI patterns and layouts.
 *   **Modularity:** Support code organization through includes and component definitions.
 *   **Compiler Target:** Serve as the input for generating efficient `.krb` files.
+*   **Runtime Interpretation:** Define structure and properties clearly enough for a separate runtime to interpret and render, including custom component behavior.
 
 ## 3. File Structure and Syntax
 
@@ -28,19 +29,19 @@ A typical `.kry` file consists of:
 
 ## 4. Core Elements
 
-Standard UI building blocks. Elements are defined using `ElementName { ... }`.
+Standard UI building blocks. Elements are defined using `ElementName { ... }`. These correspond directly to standard `ELEM_TYPE_*` values in the KRB specification.
 
-*   **`App`**: The root element defining application-level properties (window size, title, etc.). Must be the top-level element describing the runnable UI.
-*   **`Container`**: A generic element for grouping other elements and controlling layout.
-*   **`Text`**: Displays text content.
-*   **`Image`**: Displays an image resource.
-*   **`Button`**: An interactive element that triggers an action on click.
-*   **`Input`**: Allows user text input.
-*   *(Other elements like `Canvas`, `List`, `Grid`, `Scrollable`, `Video` can be defined)*
+*   **`App`**: The root element defining application-level properties (window size, title, etc.). Must be the top-level element describing the runnable UI. Maps to `ELEM_TYPE_APP`.
+*   **`Container`**: A generic element for grouping other elements and controlling layout. Maps to `ELEM_TYPE_CONTAINER`.
+*   **`Text`**: Displays text content. Maps to `ELEM_TYPE_TEXT`.
+*   **`Image`**: Displays an image resource. Maps to `ELEM_TYPE_IMAGE`.
+*   **`Button`**: An interactive element that triggers an action on click. Maps to `ELEM_TYPE_BUTTON`.
+*   **`Input`**: Allows user text input. Maps to `ELEM_TYPE_INPUT`.
+*   *(Other elements like `Canvas`, `List`, `Grid`, `Scrollable`, `Video` can be defined, corresponding to standard `ELEM_TYPE_*` in KRB)*
 
 ## 5. Properties
 
-Properties modify the appearance or behavior of an element. They are specified within the element's block as `propertyName: value`.
+Properties modify the appearance or behavior of an element. They are specified within the element's block as `propertyName: value`. These generally map to standard KRB properties or are handled as described in Section 8 (Component Definition).
 
 *   **Syntax:** `propertyName: value`
 *   **Values:**
@@ -53,15 +54,16 @@ Properties modify the appearance or behavior of an element. They are specified w
     *   **Style Names:** Strings referencing a defined style (`"my_button_style"`).
     *   **Callback Names:** Strings referencing runtime functions (`"handleButtonClick"`).
 
-*   **Standard Properties:** (Examples - See KRB spec for binary mapping)
-    *   `id`: String identifier for referencing the element.
-    *   `pos_x`, `pos_y`, `width`, `height`: Size and position.
-    *   `layout`: Layout mode for children (e.g., `row`, `column`, `center`).
-    *   `style`: Name of a style block to apply.
-    *   `background_color`, `text_color`, `border_color`, `border_width`: Visual styling.
-    *   `text`: Text content for `Text` or `Button`.
-    *   `image_source`: Path for `Image`.
-    *   `onClick`, `onChange`, etc.: Event callbacks.
+*   **Standard Properties:** (Examples - Correspond to KRB `PROP_ID_*`)
+    *   `id`: String identifier for referencing the element. Passed to KRB Element Header `ID` field (as string index).
+    *   `pos_x`, `pos_y`, `width`, `height`: Basic geometry. Passed to KRB Element Header. Often influenced by runtime layout based on `layout` properties and custom component logic.
+    *   `layout`: Layout mode hints for children (e.g., `row`, `column`, `center`, `grow`, `wrap`). Compiled into KRB `PROP_ID_LAYOUTFLAGS`, which the compiler *may* use to set the KRB Element Header `Layout` byte, but final layout arrangement often relies on runtime interpretation, especially within custom components.
+    *   `style`: Name of a style block to apply. Passed to KRB Element Header `Style ID` field (as style index).
+    *   `background_color`, `text_color`, `border_color`, `border_width`: Visual styling. Compiled into standard KRB properties.
+    *   `text`: Text content for `Text` or `Button`. Compiled into standard KRB property (likely `PROP_ID_TEXTCONTENT`).
+    *   `image_source`: Path for `Image`. Compiled into standard KRB property (likely `PROP_ID_IMAGESOURCE`).
+    *   `onClick`, `onChange`, etc.: Event callbacks. Compiled into KRB Event entries.
+    *   `visible`: Boolean controlling element visibility. Compiled into standard KRB property (likely `PROP_ID_VISIBILITY`).
     *   *(Many others corresponding to KRB `PROP_ID_*`)*
 
 ## 6. Styles (`style`)
@@ -72,11 +74,11 @@ Reusable blocks of properties that can be applied to elements. Styles enhance mo
     ```kry
     style "style_name" {
         # Optional: Inherit properties from a base style
-        extends: "base_style_name" 
+        extends: "base_style_name"
 
         # Properties defined in this block
         propertyName: value
-        propertyName: value 
+        propertyName: value
         # ... more properties
     }
     ```
@@ -90,7 +92,7 @@ Reusable blocks of properties that can be applied to elements. Styles enhance mo
         *   Undefined `base_style_name`.
         *   Cyclic dependencies (e.g., Style A extends Style B, and Style B extends Style A).
 *   **Usage:** Applied to an element using the `style: "style_name"` property. Properties defined directly on the element override those from the applied style (including any inherited properties).
-*   **KRB Mapping:** Style inheritance is resolved entirely by the **compiler**. The final `.krb` file contains `Style Blocks` with the fully resolved set of properties for each style ID. The runtime does not need to know about the `extends` relationship.
+*   **KRB Mapping:** Style inheritance is resolved entirely by the **compiler**. The final `.krb` file contains `Style Blocks` with the fully resolved set of *standard* properties for each style ID. The runtime does not need to know about the `extends` relationship. Styles define *standard* KRB properties.
 
 *   **Example:**
     ```kry
@@ -112,9 +114,9 @@ Reusable blocks of properties that can be applied to elements. Styles enhance mo
 
     # Usage
     Button {
-        style: "button_primary" 
+        style: "button_primary"
         text: "Submit"
-    } 
+    }
     ```
 
 ## 7. File Inclusion (`@include`)
@@ -126,123 +128,194 @@ Textually includes the content of another `.kry` file. Processed by the compiler
 
 ## 8. Component Definition (`Define`)
 
-Allows defining reusable custom UI components using standard elements. This is a **source-level abstraction** primarily handled by the **compiler**.
+Allows defining reusable custom UI components using standard elements as a base. This is a **source-level abstraction**. The compiler processes these definitions, but the **runtime interprets** the final behavior based on the compiled KRB structure and any associated custom properties.
 
 *   **Syntax:**
     ```kry
     Define ComponentName {
-        # Optional: Declare properties the component accepts
+        # Optional: Declare properties the component accepts from usage tags.
+        # These properties guide the compiler and runtime.
         Properties {
-            propName: Type = DefaultValue # e.g., orientation: String = "row"
-            isRequired: Bool             # e.g., label: String 
+            # propName: Type = DefaultValue # e.g., text_label: String = "Default"
+            # isRequired: Bool             # e.g., data_source: String
+            # specialProp: String = "default" # e.g., position: String = "bottom"
             # Supported Types: String, Int, Float, Bool, Color, StyleID, Enum(...)
+            # (Compiler validates usage against these declarations)
         }
 
-        # Required: The structure using standard Kryon elements
-        Container { 
-            id: "${ComponentName}_root" # Example unique ID generation
-            # ... structure ...
-            # Compiler logic uses declared properties here
+        # Required: The root element structure using standard Kryon elements.
+        # This defines the base KRB element(s) generated for this component.
+        Container { # Or Button, Text, etc. - Must be a single root standard element.
+            # Standard properties from the usage tag (id, width, height, style)
+            # are typically applied here by the compiler.
+
+            # Children passed within the <ComponentName> usage tag are typically
+            # inserted here by the compiler.
+
+            # Properties declared in the 'Properties' block above might be:
+            # 1. Used to set STANDARD properties on elements within this structure.
+            # 2. Passed through as CUSTOM properties in the KRB for runtime handling.
         }
     }
     ```
 *   **Usage:** Use the defined component like a standard element:
     ```kry
     ComponentName {
-        id: "my_instance"
-        label: "Click Me" # Provide values for declared properties
-        orientation: "column"
-        # Standard properties like width, height, style can also be applied
-        width: 100
+        id: "my_instance_1"
+        text_label: "Click Me" # Provide values for declared properties
+        position: "top"        # Provide values for declared properties
+        width: 100             # Standard properties are applied too
+        style: "some_style"
 
-        # Children can be placed inside if the definition supports it (implicitly or via <slot>)
-        Text { text: "Child content" }
+        # Children are placed inside based on the definition's structure
+        Image { image_source: "icon.png" }
     }
     ```
-*   **Compiler Role:** The compiler is expected to:
-    *   Parse `Define` blocks and store definitions.
-    *   Expand component usage (`<ComponentName>`) into its defined standard element structure.
-    *   Validate and merge properties from the usage according to the `Properties` declaration.
-    *   Handle special declared properties (like `position`) to potentially modify the layout *outside* the component (e.g., parent layout).
-    *   **Generate standard KRB v0.3 elements and properties**, resolving all component abstractions. The runtime typically does not need to know about the original source components.
+*   **Compiler Role:** The Kryon compiler is responsible for:
+    1.  **Parsing `Define` Blocks:** Storing the definition, including declared properties and the expansion structure.
+    2.  **Expanding Usage:** When it encounters `<ComponentName>`, it generates the corresponding standard KRB element structure defined in the `Define` block (e.g., a `Container` in the example above).
+    3.  **Validating & Merging Properties:**
+        *   Checks if properties provided in the usage tag match the `Properties` declaration.
+        *   Applies standard properties (`id`, `width`, `height`, `style`, etc.) from the usage tag to the root KRB element generated.
+        *   For properties declared in the `Properties` block:
+            *   If the property maps directly to a *standard* KRB property of the generated element(s) (e.g., `text_label` could set `PROP_ID_TEXTCONTENT` on an inner `Text` element), the compiler *may* perform this mapping.
+            *   If the property represents component-specific logic or data (like `position` or `data_source`), the compiler typically **encodes it as a Custom Property** in the KRB (using the KRB v0.3+ Custom Properties section). It **does NOT** typically perform complex layout adjustments or interpretations based on these properties itself.
+    4.  **Handling Children:** Inserts KRB representations of child elements from the usage tag into the appropriate location within the expanded KRB structure.
+    5.  **Generating KRB:** The output `.krb` contains standard KRB elements, standard properties, events, children, and potentially **Custom Properties** carrying data for runtime interpretation.
+
+*   **Runtime Role (Crucial):**
+    *   The runtime parses the KRB file.
+    *   When it encounters an element (e.g., a `Container` generated from a `<TabBar>` usage), it checks for associated **Custom Properties** (like `position`).
+    *   The runtime contains the specific logic necessary to **interpret** these custom properties and implement the component's unique behavior (e.g., positioning the `TabBar` container at the bottom/top of its parent based on the `position` custom property value).
+
+*   **Example (`TabBar`'s `position` Property):**
+    *   Compiler sees `<TabBar { position: "bottom"; ... }>`, defined by `Define TabBar { Properties { position: String="bottom" } Container {...} }`.
+    *   Compiler generates a KRB `Container` element.
+    *   Compiler adds a **Custom Property** to this KRB `Container`: `{ key="position", value="bottom" }`.
+    *   **Runtime** parses this `Container`, sees the `position="bottom"` custom property, and executes its internal logic to place this container visually at the bottom of its parent layout area. The compiler did not perform this placement.
 
 ## 9. Events
 
-Event handlers are assigned via properties like `onClick`, `onChange`, etc. The value is a string naming a function expected to exist in the target runtime environment.
+Event handlers are assigned via properties like `onClick`, `onChange`, etc. The value is a string naming a function expected to exist in the target runtime environment. The compiler maps these to KRB Event entries.
 
 *   **Syntax:** `onClick: "functionNameInRuntime"`
 
 ## 10. Example
 
 ```kry
-# examples/simple_button.kry
+# examples/simple_layout.kry
 @include "../widgets/basic_styles.kry" # Assume styles are defined here
 
 App {
     window_width: 200
-    window_height: 100
-    window_title: "Button App"
+    window_height: 150
+    window_title: "Layout App"
     style: "base_window_style" # From included file
-    layout: center
+    layout: column # Standard layout property for direct children of App
+
+    Text {
+        text: "Content Area"
+        layout: grow center # Standard layout properties
+        background_color: #444444FF
+    }
 
     Button {
         id: "the_button"
-        width: 100
         height: 40
-        text: "Press"
+        text: "A Button"
         style: "default_button_style" # From included file
         onClick: "handlePress"
     }
 }
-```
 
+```
 ## 11. Standard Component Library (Widgets)
 
-While Kryon allows defining custom components using `Define`, a standard library of common UI widgets is typically provided for convenience. These are usually defined in separate `.kry` files (e.g., within a `widgets/` directory) and included using `@include`.
+A standard library of common UI widgets (`TabBar`, `Card`, `Dialog`, etc.) is typically provided via `.kry` files using the `Define` mechanism (see Section 8). Developers `@include` these definition files and use the components in their application `.kry` source.
 
-These standard components are built using the core elements (`Container`, `Button`, `Text`, etc.) and are compiled down to standard KRB elements by the Kryon compiler. Developers use them like any other element in their `.kry` source.
+These components are defined using standard core elements (`Container`, `Button`, etc.) and properties within their `Define` blocks. The compiler processes these definitions and usages as described in Section 8. Component-specific behaviors and layout adjustments (like `TabBar` positioning relative to siblings) rely on the **runtime environment interpreting specific custom properties** that the compiler passes through into the `.krb` file.
 
-**Note:** The exact set of standard components may vary slightly between Kryon implementations or versions, but common examples include:
-
-*   **`TabBar`**: A container typically placed at the top or bottom to hold navigation buttons (tabs).
-    *   **Common Usage:**
+*   **`TabBar`**: A component typically used for navigation, often placed at the top or bottom of a screen section.
+    *   **Definition Source Example (`widgets/tab_bar.kry`):** This file would contain the `Define TabBar` block along with necessary base styles.
         ```kry
-        @include "widgets/tab_bar.kry" // Or similar path
+        # widgets/tab_bar.kry
 
-        App {
-            # ... App properties ...
-            layout: column # Usually needed for top/bottom bars
+        # --- Base Styles (for elements INSIDE the TabBar, applied via usage) ---
+        style "tab_bar_style_base_row" { /* Standard properties for row layout */ }
+        style "tab_bar_style_base_column" { /* Standard properties for column layout */ }
+        style "tab_item_style_base" { /* Default style for Buttons inside */ }
+        style "tab_item_style_active_base" { extends: "tab_item_style_base"; /* ... */ }
 
-            Container { # Main content area
-                 # ... page content ...
-                 layout: grow # Make content area fill remaining space
+        # --- Widget Definition: TabBar ---
+        Define TabBar {
+            # Properties declared here guide compiler & runtime
+            Properties {
+                # Affects internal layout of children (e.g. Buttons).
+                # Compiler might pass this as a custom prop, or use it to set
+                # standard 'layout' prop on the generated Container. Runtime might also use it.
+                orientation: String = "row"
+
+                # **CRITICAL**: This property's value is intended for RUNTIME interpretation
+                # to position the TabBar relative to its siblings.
+                # Compiler passes this as a KRB Custom Property.
+                position: String = "bottom" # e.g., "top", "bottom", "left", "right"
+
+                # Optional style override for the root Container element.
+                # Compiler uses this to set the standard 'style' property/StyleID.
+                bar_style: StyleID = ""
             }
 
-            TabBar {
-                id: "my_nav"
-                position: "bottom" # Hint for placement ("top", "bottom", "left", "right")
-                # Optional: bar_style: "custom_tab_bar_style"
+            # Expansion Root: Defines the base KRB structure.
+            Container {
+                # Compiler applies 'id', standard width/height/style etc. from usage tag here.
+                # Compiler sets 'style' based on bar_style/style usage, potentially defaulting based on orientation.
+                # Compiler inserts KRB children (e.g., Buttons from usage) here.
 
-                Button { text: "Home"; style: "tab_item_style"; onClick: "..." }
-                Button { text: "Search"; style: "tab_item_style"; onClick: "..." }
-                # ... more Buttons ...
+                # Compiler generates KRB Custom Properties for runtime handling:
+                # - { key="position", value=<value_from_usage_or_default> }
+                # - { key="orientation", value=<value_from_usage_or_default> } (Optional, if runtime needs it)
             }
         }
         ```
-    *   **Key Properties (Handled by Compiler):**
-        *   `position`: (String) Hints to the compiler to adjust parent layout and element order. Common values: `"top"`, `"bottom"`, `"left"`, `"right"`. Default: `"bottom"`. This property is *consumed* by the compiler and does not become a direct KRB property.
-        *   `orientation`: (String) Controls the internal layout of the tab items within the bar. Common values: `"row"`, `"column"`. Default: `"row"`. Affects which default style (`tab_bar_style_base_row` or `tab_bar_style_base_column`) is applied if `bar_style` or `style` are not provided.
-        *   `bar_style`: (StyleID String) Allows applying a specific custom style directly to the underlying `Container` of the TabBar, overriding default styles.
-        *   `style`: (StyleID String) Also applies a style to the underlying `Container`. If both `style` and `bar_style` are present, `bar_style` might take precedence (compiler implementation detail).
-    *   **Children:** Typically expects `Button` elements (or similar interactive elements) as children, representing the individual tabs. Developers are responsible for styling these child items (e.g., using `tab_item_style_base` or custom styles).
+    *   **Common Usage:**
+        ```kry
+        @include "widgets/tab_bar.kry"
 
-*   **`Card`**: (Example) A container with predefined padding, border radius, and often a subtle background or shadow, used to group related content visually.
-    *   **Common Usage:** `Card { width: 200; Text { ... } }`
-    *   **Key Properties:** Inherits `Container` properties. Might have specific style defaults.
+        App {
+            # The runtime layout logic for App's children needs to consider
+            # the 'position' custom property of the TabBar element.
+            layout: column # Typical parent layout for top/bottom TabBar
 
-*   **`Dialog`**: (Example) A modal or non-modal window overlay.
-    *   *(Details would follow)*
+            Container {
+                 id: "main_content_area"
+                 layout: grow # Make content fill space not taken by TabBar
+                 # ... Page content elements ...
+            }
 
-*   *(... Add other standard widgets like `Checkbox`, `RadioButton`, `Slider`, `ProgressBar` etc., as they are defined)*
+            TabBar {
+                id: "app_bottom_navigation"
+                position: "bottom" # This value gets compiled into a KRB Custom Property.
+                # style: "my_custom_overall_tabbar_style" # Overrides defaults
 
-**Compiler Responsibility:** The Kryon compiler is responsible for expanding these component usages (`<TabBar>`, `<Card>`, etc.) into their underlying structure of core elements (`Container`, `Button`, etc.) and resolving their specific properties (like `position`) into appropriate layout flags and element ordering within the final KRB file. The KRB runtime typically only needs to understand the core elements and standard properties.
+                Button { id: "tab_home"; style: "tab_item_style_active_base"; text: "Home"; /*...*/ }
+                Button { id: "tab_search"; style: "tab_item_style_base"; text: "Search"; /*...*/ }
+                Button { id: "tab_profile"; style: "tab_item_style_base"; text: "Profile"; /*...*/ }
+            }
+        }
+        ```
+    *   **KRB Result & Runtime Interpretation:**
+        1.  The compiler encounters `<TabBar>`.
+        2.  It generates a standard `Container` element in the KRB based on the `Define TabBar` structure.
+        3.  It applies the `id` ("app_bottom_navigation") and any standard properties (`style`, etc.) from the usage tag to this KRB `Container`.
+        4.  It generates KRB representations for the child `Button` elements and links them as children to the `Container`.
+        5.  It adds **Custom Properties** to the KRB `Container` element, for example: `{ key="position", value="bottom" }` (using string table indices).
+        6.  The **Runtime** parses the KRB file. When laying out the children of the `App` element, it encounters the `Container` with `id="app_bottom_navigation"`.
+        7.  The runtime checks this `Container`'s Custom Properties. It finds `position="bottom"`.
+        8.  The runtime's specific layout engine executes logic associated with the "position" custom property key. It places this container at the bottom of the available space within the `App` element, potentially adjusting the space available for siblings like "main_content_area". The rendering and exact placement logic reside entirely within the runtime.
+
+*   **(Add definitions for other standard widgets like `Card`, `Dialog`, `Checkbox`, `Slider`, etc. following the same pattern):**
+    *   Defined using `Define` with standard core elements.
+    *   Declare expected properties in the `Properties` block.
+    *   Compiler generates standard KRB elements.
+    *   Compiler passes component-specific properties (those not mapping directly to standard KRB props) as **KRB Custom Properties**.
+    *   **Runtime** contains the necessary code to find and **interpret** these Custom Properties to implement the widget's unique appearance, layout contribution, and behavior.

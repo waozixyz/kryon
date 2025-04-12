@@ -275,19 +275,20 @@ type Resource struct {
 
 // Document holds the entire parsed KRB data in memory.
 type Document struct {
-	Header         Header
-	VersionMajor   uint8 // Convenience parsed version
-	VersionMinor   uint8 // Convenience parsed version
-	Elements       []ElementHeader
-	Properties     [][]Property      // Properties[elementIndex][propertyIndex]
-	CustomProperties [][]CustomProperty // CustomProperties[elementIndex][customPropIndex] (v0.3)
-	Events         [][]EventFileEntry // Events[elementIndex][eventIndex]
-	Styles         []Style            // Index is StyleID - 1
-	Animations     []byte             // TODO: Define Animation structures if needed
-	Strings        []string           // 0-based index
-	Resources      []Resource         // 0-based index
-    ChildRefs      [][]ChildRef       // Raw child offsets for tree building
-    AnimationRefs  [][]AnimationRef   // Raw animation refs
+    Header           Header
+    VersionMajor     uint8
+    VersionMinor     uint8
+    Elements         []ElementHeader
+    ElementStartOffsets []uint32 // <-- ADD THIS FIELD: Start byte offset of each ElementHeader in the file
+    Properties       [][]Property
+    CustomProperties [][]CustomProperty
+    Events           [][]EventFileEntry
+    Styles           []Style
+    Animations       []byte
+    Strings          []string
+    Resources        []Resource
+    ChildRefs        [][]ChildRef
+    AnimationRefs    [][]AnimationRef
 }
 
 // Helper to get layout direction

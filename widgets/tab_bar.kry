@@ -1,86 +1,62 @@
 # widgets/tab_bar.kry
 
 # --- Base Styles ---
-# Default styles applied by the compiler based on orientation, unless overridden.
-# Users can apply their own styles using `style:` or `bar_style:` on the <TabBar> usage.
 
 style "tab_bar_style_base_row" {
-    background_color: #1A1A1AFF 
-    height: 50                 
-    layout: row                # Arrange tab items horizontally
-    # property_gap: 4          # Optional gap if KRB spec supports 'gap' property
+    background_color: #1A1A1AFF
+    height: 50
+    layout: row # Arrange tab items horizontally
+    # Optional: property_gap: 4
 }
 
 style "tab_bar_style_base_column" {
-    # Default style for vertical orientation
-    background_color: #1A1A1AFF 
-    width: 60                  # Default width for a vertical bar
-    layout: column             # Arrange tab items vertically
-    # property_gap: 4          # Optional gap
+    # Style for vertical orientation
+    background_color: #1A1A1AFF
+    width: 60
+    layout: column # Arrange tab items vertically
+    # Optional: property_gap: 4
 }
 
-style "tab_item_style_base" { 
-    # Default base style for items (e.g., Buttons) placed inside the TabBar.
-    # Users should apply this or a custom style to their Button elements.
-    background_color: #404040FF 
+style "tab_item_style_base" {
+    # Default style for items inside the TabBar (e.g., Buttons).
+    background_color: #404040FF
     border_width: 0
     text_alignment: center
-    text_color: #E0E0E0FF     
-    # Size/padding hints (users likely need to control exact item size)
-    # property_padding: 5
+    text_color: #E0E0E0FF
+    # Optional: property_padding: 5
 }
 
-style "tab_item_style_active_base" { 
+style "tab_item_style_active_base" {
+    # Style for the active/selected tab item.
     extends: "tab_item_style_base"
-    background_color: #5070A0FF 
-    text_color: #FFFFFFFF     
+    background_color: #5070A0FF
+    text_color: #FFFFFFFF
 }
 
 # --- Widget Definition: TabBar ---
-# The compiler uses this definition to expand <TabBar> usage into standard elements.
+# Compiler expands <TabBar> usage into a Container.
 Define TabBar {
 
-    # --- Declare Accepted Properties ---
-    # These properties are understood by the compiler during expansion.
+    # Accepted properties for <TabBar> usage.
     Properties {
-        # Controls the layout *inside* the bar (row/column of tab items).
-        # Affects which base style (`_row` or `_column`) is applied by default.
-        orientation: String = "row"  # Default: "row". Other value: "column".
+        # Layout *inside* the bar: "row" or "column". Affects default style.
+        orientation: String = "row"
 
-        # Controls the placement *relative to siblings* within the PARENT container.
-        # This is a HINT to the compiler to adjust parent layout and child order.
-        # It does NOT become a direct property in the final KRB.
-        position: String = "bottom" # Default: "bottom". Others: "top", "left", "right".
+        # Placement hint *relative to siblings*: "top", "bottom", "left", "right".
+        # Used by compiler to adjust parent layout & child order. Consumed by compiler.
+        position: String = "bottom"
 
-        # Allows users to explicitly pass a style name for the main bar container,
-        # overriding the default orientation-based style selection.
-        bar_style: StyleID = "" # Optional: Default is empty, logic below applies base style.
+        # Optional style ID to override default bar container style.
+        bar_style: StyleID = ""
     }
 
-    # --- Root Element Structure ---
-    # Compiler expands <TabBar> usage into this Container.
+    # Root Element Structure (Result of compiler expansion)
     Container {
-        # --- Compiler Expansion Logic Notes ---
-        # The compiler performs the following when expanding <TabBar>:
-        # 1. Reads properties from usage: <TabBar id="nav" orientation="column" position="left" bar_style="my_style">
-        # 2. Determines effective 'orientation' (user value or default "row").
-        # 3. Determines effective 'position' (user value or default "bottom"). Uses this value to:
-        #    a. Set the PARENT container's `layout` property (column for top/bottom, row for left/right).
-        #    b. Order this expanded Container relative to its main sibling within the parent.
-        #    c. Potentially add a 'grow' flag to the sibling content container.
-        #    d. The 'position' property itself is *consumed* and not added to KRB.
-        # 4. Determines the StyleID to apply to *this* Container:
-        #    a. IF `bar_style` provided in usage -> Use `bar_style` value.
-        #    b. ELSE IF `style` provided directly on usage tag -> Use `style` value.
-        #    c. ELSE IF effective 'orientation' is "column" -> Use "tab_bar_style_base_column".
-        #    d. ELSE (effective 'orientation' is "row") -> Use "tab_bar_style_base_row".
-        # 5. Merges standard properties (id, width, height, etc.) from usage onto this Container.
-        # 6. Inserts children (e.g., Buttons) from the usage inside this Container.
-        # 7. Outputs the resulting standard Container element (with standard props/children) to KRB.
-
-        # Example placeholder ID - Compiler might generate unique IDs if needed.
-        # id: "${TabBar}_instance_${instance_count}" 
-
-        # The actual 'style' property applied here is determined by the compiler logic above.
+        # Compiler determines the final 'style' property based on usage:
+        # 1. 'bar_style' property from usage.
+        # 2. 'style' property directly on <TabBar> usage tag.
+        # 3. Default style based on 'orientation' ('tab_bar_style_base_row' or '_column').
+        # Compiler merges standard properties (id, width, height) from usage here.
+        # Compiler inserts children (e.g., Buttons) from usage inside this Container.
     }
 }

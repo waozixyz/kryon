@@ -45,6 +45,8 @@ type RenderElement struct {
     IntrinsicW int
     IntrinsicH int
 
+	IsVisible       bool
+
     // Interaction & Events
     IsInteractive bool
     EventHandlers []EventCallbackInfo

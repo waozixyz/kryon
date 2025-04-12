@@ -17,12 +17,13 @@ App {
     window_title: "Bottom Tab Example"
     resizable: false
     style: "app_theme"
-    layout: center grow
+    layout: column 
 
     Container { 
         id: "main_content_area"
         style: "content_panel_style" 
-
+        layout: grow center 
+        
         Container { 
             id: "page_home" 
             Text {
@@ -32,6 +33,7 @@ App {
         }
         Container { 
             id: "page_search" 
+            visible: false 
             Text {
                 text: "Search Results Area"
                 font_size: 18
@@ -39,9 +41,13 @@ App {
         }
         Container { 
             id: "page_profile" 
-            # visible: false # Conceptually hidden
+            visible: false
+            Text {
+                text: "Profile Page Details"
+                font_size: 18
+            }
         }
-    }
+    } 
 
     TabBar {
         id: "app_bottom_navigation"
@@ -68,5 +74,6 @@ App {
             text: "Profile"
             onClick: "showProfilePage"
         }
-    }
-}
+    } 
+
+} 
