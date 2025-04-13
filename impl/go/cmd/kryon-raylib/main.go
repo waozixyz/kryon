@@ -6,34 +6,30 @@ import (
 	"fmt"
 	"log"
 	"os"
-    
 	"path/filepath"
-    
+
 	"github.com/waozixyz/kryon/impl/go/krb"    // KRB parser
 	"github.com/waozixyz/kryon/impl/go/render" // Renderer interface
 	// Import the specific implementation (Raylib)
+	// Ensure this path matches your project structure
 	"github.com/waozixyz/kryon/impl/go/render/raylib"
-
 )
 
-// --- Placeholder Event Handler Functions ---
-// These functions will be called when the corresponding KRB onClick names are triggered.
-// They need access to the application state (like the renderer/elements) to modify visibility.
-
+// --- Global state for handlers (simple approach) ---
 var (
-	// Keep a reference to the renderer/elements accessible to handlers
-	// This is a simple way; consider dependency injection or a dedicated App state struct for larger apps.
 	appRenderer render.Renderer
-	allElements []*render.RenderElement
-	krbDocument *krb.Document // Keep reference to doc for ID lookups if needed
+	allElements []*render.RenderElement // Flat list from GetRenderTree()
+	krbDocument *krb.Document         // Reference to parsed KRB for string/resource lookups
 )
 
-// Helper function to get element by ID name (more robust)
+// --- Helper function to get element by ID name ---
 func findElementByID(idName string) *render.RenderElement {
-	if appRenderer == nil || krbDocument == nil {
+	if len(allElements) == 0 || krbDocument == nil {
+		log.Printf("WARN findElementByID: State not ready (elements=%d, doc=%t)", len(allElements), krbDocument != nil)
 		return nil
 	}
-	targetIDIndex := uint8(0) // 0 is often reserved for "no ID"
+
+	targetIDIndex := uint8(0)
 	found := false
 	for idx, str := range krbDocument.Strings {
 		if str == idName {
@@ -43,73 +39,68 @@ func findElementByID(idName string) *render.RenderElement {
 		}
 	}
 	if !found || targetIDIndex == 0 {
-		log.Printf("WARN: Element ID '%s' not found in string table.", idName)
+		log.Printf("WARN findElementByID: Element ID '%s' not found in string table.", idName)
 		return nil
 	}
 
-	elements := appRenderer.GetRenderTree() // Get the current tree elements
-	for _, el := range elements {
-		if el.Header.ID == targetIDIndex {
-			return el // Return the first match
+	for _, el := range allElements {
+		if el != nil && el.Header.ID == targetIDIndex {
+			return el
 		}
 	}
-	log.Printf("WARN: Element with ID '%s' (Index %d) not found in render tree.", idName, targetIDIndex)
+	log.Printf("WARN findElementByID: Element with ID '%s' (Index %d) not found in render tree.", idName, targetIDIndex)
 	return nil
 }
 
+// setActivePage updates the visibility of page containers.
+func setActivePage(visiblePageID string) {
+	log.Printf("ACTION: Setting active page to '%s'", visiblePageID)
+	pageIDs := []string{"page_home", "page_search", "page_profile"} // List of page container IDs
 
+	foundVisible := false
+	for _, pageID := range pageIDs {
+		pageElement := findElementByID(pageID)
+		if pageElement != nil {
+			isVisible := (pageID == visiblePageID)
+			if isVisible != pageElement.IsVisible {
+				pageElement.IsVisible = isVisible
+				log.Printf("      Elem %d ('%s') visibility set to %t", pageElement.OriginalIndex, pageID, isVisible)
+			}
+			if isVisible { foundVisible = true }
+		} else {
+            log.Printf("WARN setActivePage: Could not find page element with ID '%s'", pageID)
+        }
+	}
+	if !foundVisible && visiblePageID != "" {
+		log.Printf("WARN setActivePage: Could not find or make visible page '%s'", visiblePageID)
+	}
+}
+
+// --- Event Handler Functions ---
 func showHomePage() {
-	log.Println("ACTION: Show Home Page")
-	homePage := findElementByID("page_home")
-	searchPage := findElementByID("page_search")
-	profilePage := findElementByID("page_profile")
-
-	if homePage != nil { homePage.IsVisible = true }
-	if searchPage != nil { searchPage.IsVisible = false }
-	if profilePage != nil { profilePage.IsVisible = false }
-
-	// TODO: Update button styles (e.g., find buttons by ID, change style reference)
+	setActivePage("page_home")
 }
 
 func showSearchPage() {
-	log.Println("ACTION: Show Search Page")
-	homePage := findElementByID("page_home")
-	searchPage := findElementByID("page_search")
-	profilePage := findElementByID("page_profile")
-
-	if homePage != nil { homePage.IsVisible = false }
-	if searchPage != nil { searchPage.IsVisible = true }
-	if profilePage != nil { profilePage.IsVisible = false }
-
-	// TODO: Update button styles
+	setActivePage("page_search")
 }
 
 func showProfilePage() {
-	log.Println("ACTION: Show Profile Page")
-	homePage := findElementByID("page_home")
-	searchPage := findElementByID("page_search")
-	profilePage := findElementByID("page_profile")
-
-	if homePage != nil { homePage.IsVisible = false }
-	if searchPage != nil { searchPage.IsVisible = false }
-	if profilePage != nil { profilePage.IsVisible = true }
-
-	// TODO: Update button styles
+	setActivePage("page_profile")
 }
 
 // --- Main Application Entry Point ---
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile) // Add file/line numbers to log
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	// --- Command Line Args ---
 	krbFilePath := flag.String("file", "", "Path to the KRB file to render")
 	flag.Parse()
 
 	if *krbFilePath == "" {
-		// Use the actual executable name in usage message
 		execName := filepath.Base(os.Args[0])
-		fmt.Printf("Usage: %s -file <krb_file_path>\n", execName)
+		fmt.Fprintf(os.Stderr, "Usage: %s -file <krb_file_path>\n", execName)
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -127,7 +118,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("ERROR: Failed to parse KRB file '%s': %v", *krbFilePath, err)
 	}
-	krbDocument = doc // Store reference for handlers
+	krbDocument = doc
 	log.Printf("Parsed KRB OK - Ver=%d.%d Elements=%d Styles=%d Strings=%d Resources=%d Flags=0x%04X",
 		doc.VersionMajor, doc.VersionMinor, doc.Header.ElementCount, doc.Header.StyleCount, doc.Header.StringCount, doc.Header.ResourceCount, doc.Header.Flags)
 
@@ -137,64 +128,64 @@ func main() {
 	}
 
 	// --- Initialize Renderer ---
-	renderer := raylib.NewRaylibRenderer() // Instantiate the Raylib implementation
-	appRenderer = renderer                 // Store global reference for handlers (simple approach)
+	renderer := raylib.NewRaylibRenderer()
+	appRenderer = renderer
 
 	// ================================================
 	// ===>>> REGISTER CUSTOM COMPONENT HANDLERS <<<===
 	// ================================================
-	// Register the handler for TabBar components. The identifier "TabBar"
-	// must match the logic used in custom_components.go to identify TabBars.
-	log.Println("Registering custom component handlers...") // Added log
+	log.Println("Registering custom component handlers...")
 	raylib.RegisterCustomComponent("TabBar", &raylib.TabBarHandler{})
-	// Register handlers for other custom components here if needed:
-	// raylib.RegisterCustomComponent("MyWidget", &raylib.MyWidgetHandler{})
+	raylib.RegisterCustomComponent("MarkdownView", &raylib.MarkdownViewHandler{})
 	// ================================================
-
 
 	// ================================================
 	// ===>>> REGISTER EVENT HANDLERS <<<===
 	// ================================================
-	// Map the callback names used in the KRB file to the actual Go functions.
-	log.Println("Registering event handlers...") // Added log
+	log.Println("Registering event handlers...")
 	renderer.RegisterEventHandler("showHomePage", showHomePage)
 	renderer.RegisterEventHandler("showSearchPage", showSearchPage)
 	renderer.RegisterEventHandler("showProfilePage", showProfilePage)
-	// Register any other event handlers defined in your KRB files.
 	// ================================================
 
-
-	// --- Prepare Render Tree (Loads resources, processes App element) ---
-	// This builds the initial element structure based on standard KRB data.
+	// --- Prepare Render Tree (Builds structure, gets window config) ---
 	roots, windowConfig, err := renderer.PrepareTree(doc, *krbFilePath)
 	if err != nil {
 		log.Fatalf("ERROR: Failed to prepare render tree: %v", err)
 	}
-	// Store the flat element list for event handlers to access/modify
-	allElements = renderer.GetRenderTree() // Get the slice of pointers
+	allElements = renderer.GetRenderTree() // Get element list *after* PrepareTree
 
 	// --- Initialize Window (using config derived from PrepareTree) ---
 	err = renderer.Init(windowConfig)
 	if err != nil {
-		renderer.Cleanup() // Attempt cleanup even if init fails
+		renderer.Cleanup()
 		log.Fatalf("ERROR: Failed to initialize renderer: %v", err)
 	}
-	defer renderer.Cleanup() // Ensure cleanup happens on normal exit
+	defer renderer.Cleanup()
+
+	// ===============================================
+	// ===>>> LOAD TEXTURES (AFTER Init) <<<===      // <<<--- ADDED THIS SECTION ---<<<
+	// ===============================================
+	err = renderer.LoadAllTextures()
+	if err != nil {
+		// Decide how to handle texture loading errors. Log warning or exit?
+		log.Printf("WARNING: Failed to load all textures: %v", err)
+		// For now, we continue, but images might be missing.
+		// Consider adding: log.Fatalf("...") if textures are critical.
+	}
+	// ===============================================
+
+	// --- Initial UI State Setup ---
+	setActivePage("page_home")
 
 	log.Println("Entering main loop...")
 
 	// --- Main Loop ---
 	for !renderer.ShouldClose() {
-		// Handle Input / Window Events
-		renderer.PollEvents() // Checks mouse clicks, window close, resize etc. -> Triggers registered handlers
-
-		// --- Update Application State (Placeholder) ---
-		// Visibility state is modified directly by event handlers in this simple example.
-
-		// --- Drawing ---
-		renderer.BeginFrame()       // BeginDrawing + ClearBackground
-		renderer.RenderFrame(roots) // Standard Layout + Custom Adjustments + Drawing
-		renderer.EndFrame()         // EndDrawing
+		renderer.PollEvents()
+		renderer.BeginFrame()
+		renderer.RenderFrame(roots)
+		renderer.EndFrame()
 	}
 
 	log.Println("Exiting.")

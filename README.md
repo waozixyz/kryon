@@ -37,7 +37,7 @@ This table shows the completion status of various language/renderer implementati
 |----------------|:--------:|:-------------:|:-------:|:---------:|
 | **C / Raylib** |    ✅    |       〰️      |    ✅   |     ❌    |
 | **C / Term**   |    ✅    |       〰️      |    ❌   |     ❌    |
-| **Go / Raylib**|    ✅    |       ✅      |    ❌   |     〰️    |
+| **Go / Raylib**|    ✅    |       ✅      |    ✅   |     〰️    |
 | **JS / Web**   |    〰️    |       〰️      |    〰️   |     ❌    |
 
 ## Build and Run

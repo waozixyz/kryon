@@ -37,7 +37,6 @@ func NewRaylibRenderer() *RaylibRenderer {
 		eventHandlerMap: make(map[string]func()),
 	}
 }
-
 // Init initializes the Raylib window based on the provided configuration.
 func (r *RaylibRenderer) Init(config render.WindowConfig) error {
 	r.config = config
@@ -61,6 +60,12 @@ func (r *RaylibRenderer) Init(config render.WindowConfig) error {
 
 	rl.SetTargetFPS(60) // Set a target frame rate
 	// rl.SetExitKey(0) // Optional: Disable default ESC key closing the window
+
+	// Check if window initialized successfully (important before GPU operations)
+	if !rl.IsWindowReady() {
+		return fmt.Errorf("raylib InitWindow failed or window is not ready")
+	}
+	log.Println("Raylib Init: Window is ready.") // Added confirmation log
 	return nil
 }
 
@@ -197,12 +202,6 @@ func (r *RaylibRenderer) PrepareTree(doc *krb.Document, krbFilePath string) ([]*
 		return nil, r.config, fmt.Errorf("failed to build element tree: %w", errBuild)
 	}
 
-	// --- Pass 4: Load Textures ---
-	// Load image resources referenced by elements
-	log.Println("PrepareTree: Loading textures...")
-	loadTextures(r, doc)
-	log.Println("PrepareTree: Texture loading complete.")
-
 	return r.roots, r.config, nil
 }
 
@@ -242,27 +241,21 @@ func (r *RaylibRenderer) RenderFrame(roots []*render.RenderElement) {
 	}
 
 	// --- 1. Standard Layout Pass ---
-	log.Printf("DEBUG RenderFrame: == Starting Standard Layout Pass ==")
 	for _, root := range roots {
 		if root != nil { // Safety check
 			PerformLayout(root, 0, 0, currentWidth, currentHeight, r.scaleFactor, r.docRef)
 		}
 	}
-	log.Printf("DEBUG RenderFrame: == Standard Layout Pass Complete ==")
 
 	// --- 2. Custom Component Layout Adjustment Pass ---
-	log.Printf("DEBUG RenderFrame: == Starting Custom Adjustment Pass ==")
 	ApplyCustomComponentLayoutAdjustments(r.GetRenderTree(), r.docRef) // <<< Ensure this line is ACTIVE
-	log.Printf("DEBUG RenderFrame: == Custom Adjustment Pass Complete ==")
 
 	// --- 3. Draw Pass ---
-	log.Printf("DEBUG RenderFrame: == Starting Draw Pass ==")
 	for _, root := range roots {
 		if root != nil { // Safety check
 			renderElementRecursive(root, r.scaleFactor)
 		}
 	}
-	log.Printf("DEBUG RenderFrame: == Draw Pass Complete ==")
 }
 
 // PerformLayout calculates layout based on standard KRB rules (Layout byte, standard sizes).
@@ -278,12 +271,6 @@ func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, par
 	if doc != nil && el.Header.ID != 0 && int(el.Header.ID) < len(doc.Strings) { // Check doc != nil
 		elIDStr += fmt.Sprintf(" ID:'%s'", doc.Strings[el.Header.ID])
 	}
-	parentIDStr := "nil"
-	if el.Parent != nil {
-		parentIDStr = fmt.Sprintf("Elem %d", el.Parent.OriginalIndex)
-	}
-	log.Printf("DEBUG Layout [%s]: Parent=%s | Available Parent Content Area: %d,%d %dx%d",
-		elIDStr, parentIDStr, parentContentX, parentContentY, parentContentW, parentContentH)
 
 	isRoot := (el.Parent == nil)
 	scaled := func(v uint16) int { return int(math.Round(float64(v) * float64(scale))) }
@@ -293,19 +280,16 @@ func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, par
 	baseW, baseH := calculateBaseSize(el, scale, doc)
 	el.IntrinsicW = baseW
 	el.IntrinsicH = baseH
-	log.Printf("DEBUG Layout [%s]: Calculated Base Size: %dx%d (Intrinsic)", elIDStr, baseW, baseH)
 
 	// Apply explicit size from KRB header
 	explicitW, explicitH := false, false // Define flags HERE to capture header explicitness
 	if el.Header.Width > 0 {
 		baseW = scaled(el.Header.Width)
 		explicitW = true // Set flag
-		log.Printf("DEBUG Layout [%s]: Overriding Width with Header.Width %d -> %d", elIDStr, el.Header.Width, baseW)
 	}
 	if el.Header.Height > 0 {
 		baseH = scaled(el.Header.Height)
 		explicitH = true // Set flag
-		log.Printf("DEBUG Layout [%s]: Overriding Height with Header.Height %d -> %d", elIDStr, el.Header.Height, baseH)
 	}
 
 	// --- 2. Determine Initial Render Size ---
@@ -314,23 +298,14 @@ func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, par
 
 	if isRoot {
 		initialW, initialH = parentContentW, parentContentH
-		log.Printf("DEBUG Layout [%s]: Is Root. Setting Initial Size to Parent Content Area: %dx%d", elIDStr, initialW, initialH)
 	} else if isFlowElement {
-		clampedW, clampedH := false, false
 		// Clamp size to the available space from the parent *if* the element doesn't have an explicit size itself
 		if !explicitW && initialW > parentContentW { // Use the flag from Step 1
 			initialW = max(0, parentContentW)
-			clampedW = true
 		}
 		if !explicitH && initialH > parentContentH { // Use the flag from Step 1
 			initialH = max(0, parentContentH)
-			clampedH = true
 		}
-		if clampedW || clampedH {
-			log.Printf("DEBUG Layout [%s]: Is Flow. Maybe Clamped Initial Size by Parent Space: %dx%d (W Clamped: %t, H Clamped: %t)", elIDStr, initialW, initialH, clampedW, clampedH)
-		}
-	} else {
-		log.Printf("DEBUG Layout [%s]: Is Absolute. Initial Size remains Base Size: %dx%d", elIDStr, initialW, initialH)
 	}
 
 	el.RenderW = initialW
@@ -339,27 +314,20 @@ func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, par
 	// --- 3. Determine Initial Render Position ---
 	el.RenderX = parentContentX
 	el.RenderY = parentContentY
-	initialX, initialY := el.RenderX, el.RenderY // Store for logging
 
 	if isEffectivelyAbsolute(el) {
 		offsetX, offsetY := scaled(el.Header.PosX), scaled(el.Header.PosY)
 		if el.Parent != nil {
 			el.RenderX = el.Parent.RenderX + offsetX
 			el.RenderY = el.Parent.RenderY + offsetY
-			log.Printf("DEBUG Layout [%s]: Is Absolute w/ Parent. Pos Offset (%d,%d) relative to Parent (%d,%d) -> (%d,%d)", elIDStr, offsetX, offsetY, el.Parent.RenderX, el.Parent.RenderY, el.RenderX, el.RenderY)
 		} else if !isRoot {
-			log.Printf("Warn: Absolute Elem %d has no parent, positioning relative to (0,0).", el.OriginalIndex)
 			el.RenderX = offsetX
 			el.RenderY = offsetY
-			log.Printf("DEBUG Layout [%s]: Is Absolute w/o Parent. Pos Offset (%d,%d) relative to (0,0) -> (%d,%d)", elIDStr, offsetX, offsetY, el.RenderX, el.RenderY)
 		} else {
 			el.RenderX = offsetX
 			el.RenderY = offsetY
-			log.Printf("DEBUG Layout [%s]: Is Absolute Root. Pos Offset (%d,%d) relative to (0,0) -> (%d,%d)", elIDStr, offsetX, offsetY, el.RenderX, el.RenderY)
 		}
-	} else {
-		log.Printf("DEBUG Layout [%s]: Is Flow. Initial Position set to Parent Content Origin: %d,%d (Final pos set later)", elIDStr, initialX, initialY)
-	}
+	} 
 
 	// --- 4. Layout Children (Recursive Step) ---
 	if el.Header.ChildCount > 0 && len(el.Children) > 0 {
@@ -382,11 +350,6 @@ func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, par
 
 		clientWidth := max(0, potentialChildW-borderL-borderR)
 		clientHeight := max(0, potentialChildH-borderT-borderB)
-
-		log.Printf("DEBUG Layout [%s]: Determined Child Layout Area: Origin=%d,%d Size=%dx%d (Based on Potential %dx%d from Avail %dx%d/Explicit:%t,%t, Borders T%d R%d B%d L%d)",
-			elIDStr, clientAbsX, clientAbsY, clientWidth, clientHeight,
-			potentialChildW, potentialChildH, parentContentW, parentContentH, explicitW, explicitH, // Use flags from Step 1
-			borderT, borderR, borderB, borderL)
 
 		PerformLayoutChildren(el, clientAbsX, clientAbsY, clientWidth, clientHeight, scale, doc)
 	} // End Child Layout Step
@@ -432,8 +395,6 @@ func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, par
 		log.Printf("DEBUG Layout [%s]: Clamping to minimum size 1x1. Prev: %dx%d -> Final: %dx%d", elIDStr, el.RenderW, el.RenderH, finalW, finalH)
 	}
 	el.RenderW, el.RenderH = finalW, finalH
-	log.Printf("DEBUG Layout [%s]: == Standard Layout Pass Complete == Final Frame: %d,%d %dx%d",
-		elIDStr, el.RenderX, el.RenderY, el.RenderW, el.RenderH)
 
 } // End PerformLayout
 
@@ -473,16 +434,10 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 		mainAxisAvailableSpace := MuxInt(mainAxisIsHorizontal, availableW, availableH)
 		crossAxisSize := MuxInt(mainAxisIsHorizontal, availableH, availableW)
 
-		log.Printf("DEBUG LayoutChildren [%s]: Flow Layout Start. ParentLayoutByte:0x%02X (Dir:%d Align:%d Rev:%t Horiz:%t) | MainSpace:%d CrossSize:%d | %d flow children",
-			parentIDStr, parent.Header.Layout, // Log the raw layout byte
-			direction, alignment, isReversed, mainAxisIsHorizontal, mainAxisAvailableSpace, crossAxisSize, len(flowChildren))
-
 		// --- Pass 1: Calculate Initial Sizes & Fixed Space ---
 		totalFixedSizeMainAxis := 0
 		growChildrenCount := 0
-		for i, child := range flowChildren {
-			log.Printf("DEBUG LayoutChildren [%s]: --- Pre-Layout Child %d/%d (Elem %d) ---", parentIDStr, i+1, len(flowChildren), child.OriginalIndex)
-			// Call PerformLayout for the child. Note that PerformLayout itself logs the final frame *relative to its parent's content origin* initially.
+		for _, child := range flowChildren {
 			PerformLayout(child, parentClientOriginX, parentClientOriginY, availableW, availableH, scale, doc)
 
 			if child.Header.LayoutGrow() {
@@ -492,7 +447,6 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 				totalFixedSizeMainAxis += fixedSize
 			}
 		}
-		log.Printf("DEBUG LayoutChildren [%s]: Pass 1 Done. FixedSpace:%d GrowCount:%d", parentIDStr, totalFixedSizeMainAxis, growChildrenCount)
 
 		// --- Calculate & Distribute Growth Space ---
 		spaceForGrowth := max(0, mainAxisAvailableSpace-totalFixedSizeMainAxis)
@@ -504,7 +458,6 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 		if growChildrenCount > 0 && spaceForGrowth > 0 {
 			growSizePerChild = spaceForGrowth / growChildrenCount
 			remainderForLastGrowChild = spaceForGrowth % growChildrenCount
-			log.Printf("DEBUG LayoutChildren [%s]: Growth Calculated. Total:%d PerChild:%d Remainder:%d (AllSpaceIsGrowth: %t)", parentIDStr, spaceForGrowth, growSizePerChild, remainderForLastGrowChild, allSpaceIsGrowth) // Log the new flag
 		}
 
 		// --- Pass 2: Finalize Sizes ---
@@ -512,8 +465,6 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 		tempGrowCount := 0
 		for _, child := range flowChildren {
 			isGrowing := child.Header.LayoutGrow()
-			childIDStr := fmt.Sprintf("Elem %d", child.OriginalIndex)
-			preSizeW, preSizeH := child.RenderW, child.RenderH
 
 			if isGrowing {
 				growAmount := growSizePerChild
@@ -533,7 +484,6 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 						child.RenderH = growAmount    // SET height
 						child.RenderW = crossAxisSize // Stretch width
 					}
-					log.Printf("DEBUG LayoutChildren [%s Child %s]: SET Size (All Grow). Amount:%d Size %dx%d -> %dx%d", parentIDStr, childIDStr, growAmount, preSizeW, preSizeH, child.RenderW, child.RenderH)
 				} else {
 					// If only *some* space was for growth (mixed fixed/grow children), ADD the growth amount.
 					if mainAxisIsHorizontal {
@@ -543,26 +493,19 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 						child.RenderH += growAmount   // ADD height
 						child.RenderW = crossAxisSize // Stretch width
 					}
-					log.Printf("DEBUG LayoutChildren [%s Child %s]: ADDED Growth (Mixed Grow). Amount:%d Size %dx%d -> %dx%d", parentIDStr, childIDStr, growAmount, preSizeW, preSizeH, child.RenderW, child.RenderH)
 				}
 				// --- >>> END CORRECTION <<< ---
 
 			} else { // Not growing
 				// Clamp cross axis size if needed (stretch not applicable)
-				clampedCross := false
 				if mainAxisIsHorizontal {
 					if child.RenderH > crossAxisSize {
 						child.RenderH = crossAxisSize
-						clampedCross = true
 					}
 				} else {
 					if child.RenderW > crossAxisSize {
 						child.RenderW = crossAxisSize
-						clampedCross = true
 					}
-				}
-				if clampedCross {
-					log.Printf("DEBUG LayoutChildren [%s Child %s]: Clamped Cross Axis. Size %dx%d -> %dx%d", parentIDStr, childIDStr, preSizeW, preSizeH, child.RenderW, child.RenderH)
 				}
 			}
 
@@ -571,11 +514,9 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 			child.RenderH = max(1, child.RenderH)
 			totalFinalFlowSizeMainAxis += MuxInt(mainAxisIsHorizontal, child.RenderW, child.RenderH)
 		}
-		log.Printf("DEBUG LayoutChildren [%s]: Pass 2 Done. TotalFinalFlowSize:%d", parentIDStr, totalFinalFlowSizeMainAxis)
 
 		// --- Calculate Alignment Offsets ---
 		startOffset, spacing := calculateAlignmentOffsets(alignment, mainAxisAvailableSpace, totalFinalFlowSizeMainAxis, len(flowChildren), isReversed)
-		log.Printf("DEBUG LayoutChildren [%s]: Alignment Offsets Calculated. Start:%d Spacing:%d", parentIDStr, startOffset, spacing)
 
 		// --- Pass 3: Position Flow Children ---
 		currentMainAxisPos := startOffset
@@ -589,7 +530,6 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 
 		for i, childIndex := range indices {
 			child := flowChildren[childIndex]
-			childIDStr := fmt.Sprintf("Elem %d", child.OriginalIndex)
 			childW, childH := child.RenderW, child.RenderH
 			// Initialize childX/Y with the parent's content area origin
 			childX, childY := parentClientOriginX, parentClientOriginY
@@ -618,12 +558,6 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 			// Assign FINAL ABSOLUTE Screen Coordinates to the child element
 			child.RenderX, child.RenderY = childX, childY
 
-			// Log the FINAL absolute coordinates assigned to the child
-			log.Printf("DEBUG LayoutChildren [%s Child %s]: ASSIGNED Final Frame: %d,%d %dx%d (From MainAxisPos:%d, CrossOffset:%d within Parent Area starting at %d,%d)",
-				parentIDStr, childIDStr,
-				child.RenderX, child.RenderY, child.RenderW, child.RenderH, // Use assigned values
-				currentMainAxisPos, crossOffset, parentClientOriginX, parentClientOriginY)
-
 			// Advance main axis position for the next child
 			currentMainAxisPos = nextMainAxisPos
 			// Add spacing if using space-between alignment
@@ -635,14 +569,12 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 
 	// --- Layout Absolute Children ---
 	if len(absoluteChildren) > 0 {
-		log.Printf("DEBUG LayoutChildren [%s]: Laying out %d Absolute Children relative to Parent Frame %d,%d", parentIDStr, len(absoluteChildren), parent.RenderX, parent.RenderY)
 		for _, child := range absoluteChildren {
 			// Pass parent's top-left corner (RenderX/Y) and full available space initially.
 			// PerformLayout will use child.Header.PosX/Y relative to parent.RenderX/Y if absolute.
 			PerformLayout(child, parent.RenderX, parent.RenderY, availableW, availableH, scale, doc)
 		}
 	}
-	log.Printf("DEBUG LayoutChildren [%s]: == Child Layout Pass Complete ==", parentIDStr)
 } // End PerformLayoutChildren
 
 
@@ -652,9 +584,6 @@ func renderElementRecursive(el *render.RenderElement, scale float32) {
 		return // Safety check for nil element
 	}
 
-	// Basic element identifier for logging
-	elIDStr := fmt.Sprintf("Elem %d", el.OriginalIndex)
-
 	// --- Check Visibility ---
 	if !el.IsVisible {
 		return // Skip drawing if element is explicitly hidden
@@ -663,9 +592,6 @@ func renderElementRecursive(el *render.RenderElement, scale float32) {
 	// Get final calculated coordinates and dimensions from the RenderElement struct
 	renderX, renderY := el.RenderX, el.RenderY
 	renderW, renderH := el.RenderW, el.RenderH
-
-	// Log the frame being used just before attempting to draw
-	log.Printf(">>> DRAW Check [%s]: Using Frame (%d,%d %dx%d) for drawing.", elIDStr, renderX, renderY, renderW, renderH)
 
 	// Only draw elements that have a positive size after layout
 	if renderW > 0 && renderH > 0 {
@@ -737,23 +663,33 @@ func (r *RaylibRenderer) RegisterEventHandler(name string, handler func()) {
 // Cleanup unloads resources and closes the Raylib window.
 func (r *RaylibRenderer) Cleanup() {
 	log.Println("Raylib Cleanup: Unloading textures...")
+	unloadedCount := 0
+	// Unload textures from the cache
 	for resIndex, texture := range r.loadedTextures {
 		if rl.IsTextureReady(texture) {
 			rl.UnloadTexture(texture)
+			unloadedCount++
 		}
 		delete(r.loadedTextures, resIndex) // Remove from map
 	}
+	log.Printf("Raylib Cleanup: Unloaded %d textures from cache.", unloadedCount) // <<<--- IMPROVED LOG ---<<<
 	r.loadedTextures = make(map[uint8]rl.Texture2D) // Clear map just in case
+
+	// Also ensure elements don't hold dangling references (though GC should handle this)
+	// for i := range r.elements {
+	// 	r.elements[i].Texture = rl.Texture2D{} // Zero out the texture struct
+	// }
 
 	if rl.IsWindowReady() {
 		log.Println("Raylib Cleanup: Closing window...")
 		rl.CloseWindow()
+	} else {
+		log.Println("Raylib Cleanup: Window was already closed or not ready.") // <<<--- ADDED ELSE CASE ---<<<
 	}
 }
-
 // ShouldClose checks if the window close button or ESC key (if enabled) was pressed.
 func (r *RaylibRenderer) ShouldClose() bool {
-	// Also check IsWindowReady to prevent calls after CloseWindow
+	// Check IsWindowReady first to avoid potential issues if called after Cleanup
 	return rl.IsWindowReady() && rl.WindowShouldClose()
 }
 
@@ -772,53 +708,43 @@ func (r *RaylibRenderer) EndFrame() {
 // PollEvents handles window events and user input.
 func (r *RaylibRenderer) PollEvents() {
 	if !rl.IsWindowReady() {
-		return // Don't process events if window isn't ready
+		return
 	}
 
 	mousePos := rl.GetMousePosition()
-	cursor := rl.MouseCursorDefault // Default cursor
+	cursor := rl.MouseCursorDefault
 	mouseClicked := rl.IsMouseButtonPressed(rl.MouseButtonLeft)
-	clickedElementFound := false // Ensure only the top-most element receives the click
+	clickedElementFound := false
 
-	// Iterate through elements in reverse draw order (top-most first)
+	// Iterate elements top-down (reverse index) for hit testing
 	for i := len(r.elements) - 1; i >= 0; i-- {
-		el := &r.elements[i]
+		el := &r.elements[i] // Use pointer
 
-		// Check only visible, interactive elements with a positive rendered size
 		if el.IsVisible && el.IsInteractive && el.RenderW > 0 && el.RenderH > 0 {
-			// Define the element's bounding box
 			bounds := rl.NewRectangle(float32(el.RenderX), float32(el.RenderY), float32(el.RenderW), float32(el.RenderH))
 
-			// Check if mouse is within bounds
 			if rl.CheckCollisionPointRec(mousePos, bounds) {
-				cursor = rl.MouseCursorPointingHand // Change cursor to indicate interactable
+				cursor = rl.MouseCursorPointingHand
 
-				// Process click event if mouse was clicked and no element above handled it
 				if mouseClicked && !clickedElementFound {
-					clickedElementFound = true // Mark click as handled
-
-					// Find and execute the registered click handler
+					clickedElementFound = true
 					for _, eventInfo := range el.EventHandlers {
 						if eventInfo.EventType == krb.EventTypeClick {
 							handlerFunc, found := r.eventHandlerMap[eventInfo.HandlerName]
 							if found {
-								handlerFunc() // Execute the registered Go function
+								handlerFunc()
 							} else {
 								log.Printf("Warn: Click handler named '%s' (for Elem %d) not registered.", eventInfo.HandlerName, el.OriginalIndex)
 							}
-							break // Assume only one click handler per element for now
+							break // Assume only one click handler
 						}
 					}
 				}
-				// Once the top-most element under the cursor is found, stop checking lower elements
-				break
+				break // Stop checking lower elements once hit
 			}
 		}
 	}
-	// Set the mouse cursor based on hover state
 	rl.SetMouseCursor(cursor)
-
-	// Handle other events like key presses, etc. here if needed
 }
 
 // --- Helper Functions ---
@@ -1033,46 +959,205 @@ func resolveEventHandlers(doc *krb.Document, el *render.RenderElement) {
 	}
 }
 
-// loadTextures loads image resources.
-func loadTextures(r *RaylibRenderer, doc *krb.Document) {
+// LoadAllTextures loads all required textures identified during PrepareTree.
+// This MUST be called AFTER rl.InitWindow() has successfully completed.
+func (r *RaylibRenderer) LoadAllTextures() error {
+	if r.docRef == nil {
+		return fmt.Errorf("cannot load textures, KRB document reference is nil (PrepareTree not called or failed?)")
+	}
+	if !rl.IsWindowReady() {
+		// This is a critical check before attempting any GPU operations
+		return fmt.Errorf("cannot load textures, Raylib window is not ready")
+	}
+
+	log.Println("LoadAllTextures: Starting texture loading...")
+	errCount := 0 // Optional: Count errors instead of returning on first one
+
+	// Call the actual loading logic
+	r.performTextureLoading(r.docRef, &errCount) // Pass pointer to error counter
+
+	log.Printf("LoadAllTextures: Texture loading complete. Encountered %d errors.", errCount)
+	if errCount > 0 {
+		// Return an error if any texture failed to load, or just log the warning
+		return fmt.Errorf("encountered %d errors during texture loading", errCount)
+	}
+	return nil
+}
+
+func (r *RaylibRenderer) performTextureLoading(doc *krb.Document, errorCounter *int) {
+	if doc == nil {
+		log.Println("Error(performTextureLoading): doc is nil")
+		*errorCounter++
+		return
+	}
+	if r.elements == nil {
+		log.Println("Error(performTextureLoading): r.elements is nil")
+		*errorCounter++
+		return
+	}
+
 	for i := range r.elements {
-		el := &r.elements[i]
+		el := &r.elements[i] // Use pointer directly
+
+		// Skip if not an image/button or no valid resource index
 		needsTexture := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton) &&
 			el.ResourceIndex != render.InvalidResourceIndex
-		if !needsTexture { continue }
-
-		resIndex := el.ResourceIndex
-		if int(resIndex) >= len(doc.Resources) { log.Printf("Error: Elem %d invalid res index %d", el.OriginalIndex, resIndex); continue }
-		res := doc.Resources[resIndex]
-
-		if loadedTex, exists := r.loadedTextures[resIndex]; exists {
-			el.Texture = loadedTex
-			el.TextureLoaded = rl.IsTextureReady(loadedTex)
+		if !needsTexture {
 			continue
 		}
 
+		resIndex := el.ResourceIndex
+
+		// Validate resource index against document resources
+		if int(resIndex) >= len(doc.Resources) {
+			log.Printf("Error: Elem %d has invalid resource index %d (max %d)", el.OriginalIndex, resIndex, len(doc.Resources)-1)
+			*errorCounter++
+			el.TextureLoaded = false // Ensure it's marked as not loaded
+			continue
+		}
+		res := doc.Resources[resIndex]
+
+		// Check cache first
+		if loadedTex, exists := r.loadedTextures[resIndex]; exists {
+			el.Texture = loadedTex
+			el.TextureLoaded = rl.IsTextureReady(loadedTex)
+			if !el.TextureLoaded {
+				log.Printf("Warn: Cached texture for Res %d (Elem %d) is no longer ready.", resIndex, el.OriginalIndex)
+				*errorCounter++
+			} else {
+				// <<<--- ADDED CACHE HIT LOG ---<<<
+				log.Printf("DEBUG [Elem %d]: Using cached texture Res %d (ID: %d)", el.OriginalIndex, resIndex, loadedTex.ID)
+			}
+			continue // Move to next element
+		}
+
+		// --- Texture not in cache, attempt loading ---
 		var texture rl.Texture2D
 		loadedOk := false
+
 		if res.Format == krb.ResFormatExternal {
-			if int(res.NameIndex) >= len(doc.Strings) { log.Printf("Error: Ext Res %d invalid name index %d", resIndex, res.NameIndex); continue }
+			// Validate name index
+			if int(res.NameIndex) >= len(doc.Strings) {
+				log.Printf("Error: External Resource %d (Elem %d) has invalid name index %d", resIndex, el.OriginalIndex, res.NameIndex)
+				*errorCounter++
+				el.TextureLoaded = false
+				continue
+			}
 			resourceName := doc.Strings[res.NameIndex]
 			fullPath := filepath.Join(r.krbFileDir, resourceName)
-			if _, statErr := os.Stat(fullPath); os.IsNotExist(statErr) { log.Printf("Error: Texture file not found: %s", fullPath) } else {
-				texture = rl.LoadTexture(fullPath)
-				if rl.IsTextureReady(texture) { loadedOk = true; log.Printf("  Loaded external texture Res %d ('%s') -> ID:%d", resIndex, resourceName, texture.ID) } else { log.Printf("Error: Failed LoadTexture for %s", fullPath) }
+			log.Printf("INFO: Attempting to load external texture: %s (for Res %d, Elem %d)", fullPath, resIndex, el.OriginalIndex)
+
+			// Check file existence first
+			if _, statErr := os.Stat(fullPath); os.IsNotExist(statErr) {
+				log.Printf("Error: Texture file not found: %s (for Res %d, Elem %d)", fullPath, resIndex, el.OriginalIndex)
+				*errorCounter++
+				el.TextureLoaded = false
+			} else {
+				// Load image data from file to CPU memory
+				img := rl.LoadImage(fullPath)
+				// <<<--- ADDED LOG ---<<<
+				log.Printf("DEBUG [Elem %d]: rl.LoadImage returned. IsImageReady(img): %t", el.OriginalIndex, rl.IsImageReady(img)) // Log LoadImage success
+
+				if rl.IsImageReady(img) {
+					// --- GPU Upload Attempt ---
+					if !rl.IsWindowReady() {
+						log.Printf("CRITICAL ERROR: Window became not ready before LoadTextureFromImage for %s", fullPath)
+						*errorCounter++
+						el.TextureLoaded = false
+					} else {
+						// <<<--- ADDED LOG ---<<<
+						log.Printf("DEBUG [Elem %d]: Calling LoadTextureFromImage for %s...", el.OriginalIndex, fullPath)
+						texture = rl.LoadTextureFromImage(img)
+						// <<<--- ADDED LOG ---<<<
+						log.Printf("DEBUG [Elem %d]: Returned from LoadTextureFromImage. Texture ID: %d", el.OriginalIndex, texture.ID) // Log the ID
+
+						isReady := rl.IsTextureReady(texture)
+						// <<<--- ADDED LOG ---<<<
+						log.Printf("DEBUG [Elem %d]: rl.IsTextureReady(texture) returned: %t", el.OriginalIndex, isReady) // Log readiness
+
+						if isReady {
+							loadedOk = true
+							// log.Printf("  OK: Loaded external texture Res %d ('%s') -> ID:%d", resIndex, resourceName, texture.ID) // Keep OK log minimal for now
+						} else {
+							log.Printf("Error: Failed IsTextureReady check for texture Res %d (Elem %d) after LoadTextureFromImage.", resIndex, el.OriginalIndex)
+							*errorCounter++
+							// el.TextureLoaded = false // This will be set later based on loadedOk
+						}
+					}
+					// --- End GPU Upload Attempt ---
+					rl.UnloadImage(img)
+				} else {
+					log.Printf("Error: Failed LoadImage (CPU) for %s (Res %d, Elem %d). Cannot create texture.", fullPath, resIndex, el.OriginalIndex)
+					*errorCounter++
+					// el.TextureLoaded = false // Set later
+				}
 			}
 		} else if res.Format == krb.ResFormatInline {
-			// Inline handling (same as before)
+			// Handling for inline data
 			if res.InlineData != nil && res.InlineDataSize > 0 {
 				ext := ".png"; if int(res.NameIndex) < len(doc.Strings) { nameHint := doc.Strings[res.NameIndex]; if nameExt := filepath.Ext(nameHint); nameExt != "" { ext = nameExt } }
-				img := rl.LoadImageFromMemory(ext, res.InlineData, int32(len(res.InlineData)))
-				if rl.IsImageReady(img) { texture = rl.LoadTextureFromImage(img); rl.UnloadImage(img); if rl.IsTextureReady(texture) { loadedOk = true; log.Printf("  Loaded inline texture Res %d -> ID:%d (hint: %s)", resIndex, texture.ID, ext) } else { log.Printf("Error: Failed LoadTextureFromImage inline Res %d", resIndex) } } else { log.Printf("Error: Failed LoadImageFromMemory inline Res %d (hint: %s)", resIndex, ext) }
-			} else { log.Printf("Error: Inline Res %d has no data", resIndex) }
-		} else { log.Printf("Warn: Unknown resource format %d for Res %d", res.Format, resIndex) }
+				log.Printf("INFO: Attempting to load inline texture Res %d (Elem %d) (hint: %s, size: %d bytes)", resIndex, el.OriginalIndex, ext, len(res.InlineData))
 
-		if loadedOk { el.Texture = texture; el.TextureLoaded = true; r.loadedTextures[resIndex] = texture } else { el.TextureLoaded = false }
-	}
-}
+				img := rl.LoadImageFromMemory(ext, res.InlineData, int32(len(res.InlineData)))
+				// <<<--- ADDED LOG ---<<<
+				log.Printf("DEBUG [Elem %d]: rl.LoadImageFromMemory returned. IsImageReady(img): %t", el.OriginalIndex, rl.IsImageReady(img)) // Log LoadImage success
+
+				if rl.IsImageReady(img) {
+					if !rl.IsWindowReady() {
+						log.Printf("CRITICAL ERROR: Window became not ready before LoadTextureFromImage for inline Res %d", resIndex)
+						*errorCounter++
+						el.TextureLoaded = false
+					} else {
+						// <<<--- ADDED LOG ---<<<
+						log.Printf("DEBUG [Elem %d]: Calling LoadTextureFromImage for inline Res %d...", el.OriginalIndex, resIndex)
+						texture = rl.LoadTextureFromImage(img)
+						// <<<--- ADDED LOG ---<<<
+						log.Printf("DEBUG [Elem %d]: Returned from LoadTextureFromImage. Texture ID: %d", el.OriginalIndex, texture.ID) // Log the ID
+
+						isReady := rl.IsTextureReady(texture)
+						// <<<--- ADDED LOG ---<<<
+						log.Printf("DEBUG [Elem %d]: rl.IsTextureReady(texture) returned: %t", el.OriginalIndex, isReady) // Log readiness
+
+						if isReady {
+							loadedOk = true
+							// log.Printf("  OK: Loaded inline texture Res %d -> ID:%d (hint: %s)", resIndex, texture.ID, ext)
+						} else {
+							log.Printf("Error: Failed IsTextureReady check for inline texture Res %d (Elem %d) after LoadTextureFromImage.", resIndex, el.OriginalIndex)
+							*errorCounter++
+							// el.TextureLoaded = false // Set later
+						}
+					}
+					rl.UnloadImage(img)
+				} else {
+					log.Printf("Error: Failed LoadImageFromMemory (CPU) for inline Res %d (Elem %d) (hint: %s)", resIndex, el.OriginalIndex, ext)
+					*errorCounter++
+					// el.TextureLoaded = false // Set later
+				}
+			} else {
+				log.Printf("Error: Inline Resource %d (Elem %d) has no data or zero size", resIndex, el.OriginalIndex)
+				*errorCounter++
+				// el.TextureLoaded = false // Set later
+			}
+		} else {
+			log.Printf("Warn: Unknown resource format %d for Res %d (Elem %d)", res.Format, resIndex, el.OriginalIndex)
+			*errorCounter++
+			// el.TextureLoaded = false // Set later
+		}
+
+		// Store texture in element and cache if loaded successfully
+		if loadedOk { // Check the flag we set based on IsTextureReady
+			// <<<--- ADDED LOG ---<<<
+			log.Printf("DEBUG [Elem %d]: Setting TextureLoaded=true and caching Res %d (ID: %d)", el.OriginalIndex, resIndex, texture.ID)
+			el.Texture = texture
+			el.TextureLoaded = true
+			r.loadedTextures[resIndex] = texture // Add to cache
+		} else {
+			// <<<--- ADDED LOG ---<<<
+			log.Printf("DEBUG [Elem %d]: Setting TextureLoaded=false for Res %d because loadedOk is false.", el.OriginalIndex, resIndex)
+			el.TextureLoaded = false
+		}
+	} // End loop through elements
+} // End of performTextureLoading function
 
 // hasStyleSize checks if style includes size properties.
 func hasStyleSize(doc *krb.Document, el *render.RenderElement, propIDMax, propIDNormal krb.PropertyID) bool {
@@ -1233,7 +1318,7 @@ func calculateContentArea(x, y, w, h, top, right, bottom, left int) (cx, cy, cw,
 }
 
 func drawContent(el *render.RenderElement, cx, cy, cw, ch int, scale float32, fgColor rl.Color) {
-	// Draw Text
+	// Draw Text (keep this part as is)
 	if (el.Header.Type == krb.ElemTypeText || el.Header.Type == krb.ElemTypeButton) && el.Text != "" {
 		fontSize := int32(math.Max(1, math.Round(baseFontSize*float64(scale))))
 		textWidthMeasured := rl.MeasureText(el.Text, fontSize)
@@ -1247,11 +1332,54 @@ func drawContent(el *render.RenderElement, cx, cy, cw, ch int, scale float32, fg
 		rl.DrawText(el.Text, int32(textDrawX), int32(textDrawY), fontSize, fgColor)
 	}
 
-	// Draw Image
-	if (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton) && el.TextureLoaded {
-		sourceRec := rl.NewRectangle(0, 0, float32(el.Texture.Width), float32(el.Texture.Height))
-		destRec := rl.NewRectangle(float32(cx), float32(cy), float32(cw), float32(ch))
-		origin := rl.NewVector2(0, 0)
-		rl.DrawTexturePro(el.Texture, sourceRec, destRec, origin, 0.0, rl.White)
+	// --- Debugging Image Drawing ---
+	isImageElement := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton)
+
+	if isImageElement {
+		// Log whether the conditions to draw are met *before* the check
+		log.Printf(">>> DRAW CONTENT CHECK [Elem %d]: IsImageElement=%t, TextureLoaded=%t",
+			el.OriginalIndex, isImageElement, el.TextureLoaded)
+
+		if el.TextureLoaded {
+			// Log the parameters JUST before calling DrawTexturePro
+			texWidth := float32(0)
+			texHeight := float32(0)
+			texId := uint32(0)
+			if rl.IsTextureReady(el.Texture) { // Add extra safety check
+				texWidth = float32(el.Texture.Width)
+				texHeight = float32(el.Texture.Height)
+				texId = el.Texture.ID
+			} else {
+				log.Printf(">>> DRAW CONTENT WARN [Elem %d]: TextureLoaded is true, but IsTextureReady is false!", el.OriginalIndex)
+			}
+
+			sourceRec := rl.NewRectangle(0, 0, texWidth, texHeight)
+			destRec := rl.NewRectangle(float32(cx), float32(cy), float32(cw), float32(ch))
+			origin := rl.NewVector2(0, 0)
+			tintColor := rl.White // Explicitly use White
+
+			log.Printf(">>> DRAW CONTENT PARAMS [Elem %d]: TextureID=%d | Source=(%.1f,%.1f %.1fx%.1f) | Dest=(%.1f,%.1f %.1fx%.1f) | Tint=(%d,%d,%d,%d)",
+				el.OriginalIndex, texId,
+				sourceRec.X, sourceRec.Y, sourceRec.Width, sourceRec.Height,
+				destRec.X, destRec.Y, destRec.Width, destRec.Height,
+				tintColor.R, tintColor.G, tintColor.B, tintColor.A)
+
+			// Check if destination rectangle has valid size
+			if destRec.Width <= 0 || destRec.Height <= 0 {
+				log.Printf(">>> DRAW CONTENT WARN [Elem %d]: Destination rectangle has zero or negative size (%.1fx%.1f), skipping DrawTexturePro.",
+					el.OriginalIndex, destRec.Width, destRec.Height)
+			} else if sourceRec.Width <= 0 || sourceRec.Height <= 0 {
+				log.Printf(">>> DRAW CONTENT WARN [Elem %d]: Source rectangle has zero or negative size (%.1fx%.1f), skipping DrawTexturePro.",
+					el.OriginalIndex, sourceRec.Width, sourceRec.Height)
+			} else {
+				// The actual draw call
+				log.Printf(">>> DRAW CONTENT ACTION [Elem %d]: Calling DrawTexturePro...", el.OriginalIndex)
+				rl.DrawTexturePro(el.Texture, sourceRec, destRec, origin, 0.0, tintColor)
+				log.Printf(">>> DRAW CONTENT ACTION [Elem %d]: Returned from DrawTexturePro.", el.OriginalIndex)
+			}
+
+		} else {
+			log.Printf(">>> DRAW CONTENT SKIP [Elem %d]: Skipping image draw because TextureLoaded is false.", el.OriginalIndex)
+		}
 	}
 }

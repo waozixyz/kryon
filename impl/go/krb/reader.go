@@ -397,7 +397,6 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 				} else {
 					res.InlineData = nil // Ensure nil if size is 0
 				}
-				// log.Printf("Debug: KRB Inline Resource %d found (Size: %d)", i, res.InlineDataSize)
 
 			default:
 				// Unknown format, treat as error or skip? Error is safer.

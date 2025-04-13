@@ -1,0 +1,40 @@
+# widgets/markdown_view.kry
+# Defines a custom component to display content from a Markdown file.
+
+# --- Optional Base Style for the Container ---
+# Provides default padding or background if desired.
+style "markdown_view_default_style" {
+    padding: 5 # Add some default padding around the content
+    # background_color: "#FFFFFF" # Optional: Default background
+    # layout: column start # Usually want column layout for markdown blocks
+}
+
+# --- Widget Definition: MarkdownView ---
+Define MarkdownView {
+
+    # Properties the MarkdownView component accepts
+    Properties {
+        # The path to the .md file, relative to the .kry file it's used in.
+        # Type hint 'Resource' tells compiler to treat this like an image source path.
+        # No default value - source must be provided.
+        source: Resource
+
+        # Optional: Allows applying a custom style to the surrounding container.
+        style: StyleID = "markdown_view_default_style" # Default to the style above
+    }
+
+    # Expansion Root:
+    # When <MarkdownView> is used, the compiler generates this Container.
+    # The runtime handler will later populate this container with Text/Image
+    # elements generated from the parsed markdown specified by the 'source' property.
+    Container {
+        # Compiler applies standard props (id, width, height from usage) here.
+        # Compiler applies the style specified by the 'style' property usage
+        # (or the default "markdown_view_default_style").
+
+        # Compiler MUST pass the 'source' property value as a KRB Custom Property
+        # associated with this Container element, keyed as "source".
+        # The actual children (Text, Image elements from Markdown)
+        # will be added dynamically by the runtime handler.
+    }
+}

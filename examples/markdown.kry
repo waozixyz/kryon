@@ -1,0 +1,35 @@
+# examples/markdown.kry
+@include "../widgets/markdown_view.kry" # Include the component definition
+
+# Basic application theme
+style "app_theme" {
+    background_color: "#FAFAFAFF" # Light grey background
+    text_color: "#333333FF"       # Dark grey text
+}
+
+# --- App Structure ---
+App {
+    window_width: 360
+    window_height: 480
+    window_title: "Markdown Example"
+    resizable: true
+    style: "app_theme"
+    layout: column # Arrange children vertically
+
+    # Use the MarkdownView component
+    MarkdownView {
+        id: "my_markdown_display"
+        # Specify the source markdown file
+        # Path is relative to *this* kry file, assuming a 'content' subfolder
+        source: "../content/sample.md"
+
+        # Optional: override the default style if needed
+        # style: "my_custom_markdown_container_style"
+
+        # Let this component grow to fill available vertical space
+        layout: grow
+    }
+
+    # Optional: Add other elements above/below if needed
+    # Container { height: 20; background_color: #CCCCCC; }
+}
