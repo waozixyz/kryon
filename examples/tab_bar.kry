@@ -7,7 +7,7 @@ style "app_theme" {
 }
 
 style "content_panel_style" {
-    background_color: "#D7CCC8FF" # Light brownish grey
+    background_color: "#D7CCC8FF"
     border_width: 0
 }
 
@@ -58,14 +58,11 @@ App {
     # Tab Bar - Placed as the last child in the App's column layout
     TabBar {
         id: "app_bottom_navigation"
-        position: "bottom" # Custom property for the renderer handler
+        position: "bottom"
 
-        # Tab Items (Buttons)
-        # Width is now handled by the layout system (grow) defined in the style
         Button {
             id: "tab_home"
-            style: "tab_item_style_active_base" # Active style initially
-            # REMOVED: width: 120
+            style: "tab_item_style_active_base"
             text: "Home"
             onClick: "showHomePage"
         }
