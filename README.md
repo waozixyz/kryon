@@ -1,5 +1,12 @@
 # Kryon Project - Implementations & Examples
 
+## Introduction
+Kryon is a system for defining user interfaces, inspired by the idea of having something like **HTML and CSS that works everywhere**, or like an **embeddable Flutter** for UI layout.
+
+The goal is simple: describe your UI's structure and style **once** using Kryon's language. This description is then turned into a compact binary file.
+
+This single binary file acts as a universal blueprint that different applications, running on various platforms (desktops, embedded systems, etc.) and using different technologies, can understand and use to display the same interface.
+
 This repository contains multi-language implementations (readers, renderers) and examples for the Kryon binary UI format (.krb).
 
 Kryon is a binary UI format designed for:
