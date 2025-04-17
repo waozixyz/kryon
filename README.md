@@ -23,7 +23,7 @@ The Kryon Compiler (kryc), which translates human-readable .kry source files int
 Detailed specifications for the Kryon formats can be found in the `docs/` directory:
 
 * [`kry_source_spec.md`](docs/kry_source_spec.md): Specification for the human-readable `.kry` source file format used to define UIs.
-* [`krb_soruce_spec.md`](docs/krb_soruce_spec.md): Specification for the compiled `.krb` binary file format, detailing its structure and encoding.
+* [`krb_source_spec.md`](docs/krb_source_spec.md): Specification for the compiled `.krb` binary file format, detailing its structure and encoding.
 
 ## Development Setup
 
