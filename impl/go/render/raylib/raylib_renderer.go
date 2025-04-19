@@ -11,22 +11,24 @@ import (
 	// "strings" // Not currently needed here
 
 	rl "github.com/gen2brain/raylib-go/raylib"
-	"github.com/waozixyz/kryon/impl/go/krb"    // Adjust import path as needed
-	"github.com/waozixyz/kryon/impl/go/render" // Adjust import path as needed
+	"github.com/waozixyz/kryon/impl/go/krb"
+	"github.com/waozixyz/kryon/impl/go/render"
 )
 
 const baseFontSize = 18.0 // Base font size for text rendering
 
-// RaylibRenderer implements the render.Renderer interface using raylib-go.
 type RaylibRenderer struct {
 	config          render.WindowConfig
-	elements        []render.RenderElement // Flat list for easy iteration/lookup by OriginalIndex
-	roots           []*render.RenderElement // Top-level elements in the hierarchy
-	loadedTextures  map[uint8]rl.Texture2D // Cache loaded textures by resource index
-	krbFileDir      string                 // Base directory for loading external resources
-	scaleFactor     float32                // Effective UI scale factor
-	docRef          *krb.Document          // Reference to the parsed KRB document
-	eventHandlerMap map[string]func()      // Map callback names to Go functions
+	elements        []render.RenderElement
+	roots           []*render.RenderElement
+	loadedTextures  map[uint8]rl.Texture2D
+	krbFileDir      string
+	scaleFactor     float32
+	docRef          *krb.Document
+
+	// --- Instance-specific maps ---
+	eventHandlerMap map[string]func()                      // Map standard callback names to Go funcs
+	customHandlers  map[string]render.CustomComponentHandler // Map component names to Go handlers
 }
 
 // NewRaylibRenderer creates a new Raylib renderer instance.
@@ -35,8 +37,10 @@ func NewRaylibRenderer() *RaylibRenderer {
 		loadedTextures:  make(map[uint8]rl.Texture2D),
 		scaleFactor:     1.0,
 		eventHandlerMap: make(map[string]func()),
+		customHandlers:  make(map[string]render.CustomComponentHandler), // Initialize map
 	}
 }
+
 // Init initializes the Raylib window based on the provided configuration.
 func (r *RaylibRenderer) Init(config render.WindowConfig) error {
 	r.config = config
@@ -248,12 +252,12 @@ func (r *RaylibRenderer) RenderFrame(roots []*render.RenderElement) {
 	}
 
 	// --- 2. Custom Component Layout Adjustment Pass ---
-	ApplyCustomComponentLayoutAdjustments(r.GetRenderTree(), r.docRef) // <<< Ensure this line is ACTIVE
-
+	r.ApplyCustomComponentLayoutAdjustments(r.GetRenderTree(), r.docRef) 
 	// --- 3. Draw Pass ---
+
 	for _, root := range roots {
 		if root != nil { // Safety check
-			renderElementRecursive(root, r.scaleFactor)
+			r.renderElementRecursiveWithCustomDraw(root, r.scaleFactor) // Use the instance method
 		}
 	}
 }
@@ -650,16 +654,6 @@ func renderElementRecursive(el *render.RenderElement, scale float32) {
 
 } // End renderElementRecursive
 
-// RegisterEventHandler stores a mapping from a callback name string to a Go function.
-func (r *RaylibRenderer) RegisterEventHandler(name string, handler func()) {
-	if name == "" || handler == nil {
-		log.Printf("WARN RENDERER: Invalid event handler registration attempt for name '%s'", name)
-		return
-	}
-	r.eventHandlerMap[name] = handler
-	log.Printf("Registered event handler for callback name '%s'", name)
-}
-
 // Cleanup unloads resources and closes the Raylib window.
 func (r *RaylibRenderer) Cleanup() {
 	log.Println("Raylib Cleanup: Unloading textures...")
@@ -708,43 +702,87 @@ func (r *RaylibRenderer) EndFrame() {
 // PollEvents handles window events and user input.
 func (r *RaylibRenderer) PollEvents() {
 	if !rl.IsWindowReady() {
-		return
+		return // Don't process if window isn't ready
 	}
 
+	// Get current input state
 	mousePos := rl.GetMousePosition()
 	cursor := rl.MouseCursorDefault
 	mouseClicked := rl.IsMouseButtonPressed(rl.MouseButtonLeft)
+
+	// Track if a click has been handled to prevent multiple triggers
 	clickedElementFound := false
 
-	// Iterate elements top-down (reverse index) for hit testing
+	// Iterate elements top-down (visually)
 	for i := len(r.elements) - 1; i >= 0; i-- {
-		el := &r.elements[i] // Use pointer
+		el := &r.elements[i]
 
-		if el.IsVisible && el.IsInteractive && el.RenderW > 0 && el.RenderH > 0 {
-			bounds := rl.NewRectangle(float32(el.RenderX), float32(el.RenderY), float32(el.RenderW), float32(el.RenderH))
+		// Skip non-visible, non-interactive, or zero-size elements
+		if el == nil || !el.IsVisible || !el.IsInteractive || el.RenderW <= 0 || el.RenderH <= 0 {
+			continue
+		}
 
-			if rl.CheckCollisionPointRec(mousePos, bounds) {
-				cursor = rl.MouseCursorPointingHand
+		// Check for mouse hover
+		bounds := rl.NewRectangle(float32(el.RenderX), float32(el.RenderY), float32(el.RenderW), float32(el.RenderH))
+		isHovering := rl.CheckCollisionPointRec(mousePos, bounds)
 
-				if mouseClicked && !clickedElementFound {
-					clickedElementFound = true
-					for _, eventInfo := range el.EventHandlers {
-						if eventInfo.EventType == krb.EventTypeClick {
-							handlerFunc, found := r.eventHandlerMap[eventInfo.HandlerName]
-							if found {
-								handlerFunc()
-							} else {
-								log.Printf("Warn: Click handler named '%s' (for Elem %d) not registered.", eventInfo.HandlerName, el.OriginalIndex)
-							}
-							break // Assume only one click handler
+		if isHovering {
+			cursor = rl.MouseCursorPointingHand // Change cursor if hovering interactive element
+		}
+
+		// --- Primary Event Check: Mouse Click ---
+		if isHovering && mouseClicked && !clickedElementFound {
+			eventHandledByCustom := false
+
+			// 1. Check for Custom Component Handler first
+			componentIdentifier, foundName := getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
+			if foundName && componentIdentifier != "" {
+				if handler, foundHandler := r.customHandlers[componentIdentifier]; foundHandler {
+					// Attempt to call HandleEvent if the handler implements it
+					if eventer, ok := handler.(interface {
+						HandleEvent(el *render.RenderElement, eventType krb.EventType) (bool, error)
+					}); ok {
+						handled, err := eventer.HandleEvent(el, krb.EventTypeClick) // Pass Click event type
+						if err != nil {
+							log.Printf("ERROR: Custom click handler '%s' [Elem %d] error: %v", componentIdentifier, el.OriginalIndex, err)
+						}
+						if handled {
+							eventHandledByCustom = true
+							clickedElementFound = true // Mark click as handled
 						}
 					}
 				}
-				break // Stop checking lower elements once hit
 			}
+
+			// 2. Check for Standard KRB Event Handlers (if not handled by custom)
+			if !eventHandledByCustom && len(el.EventHandlers) > 0 {
+				for _, eventInfo := range el.EventHandlers {
+					if eventInfo.EventType == krb.EventTypeClick {
+						// Look up and execute the registered Go function
+						handlerFunc, found := r.eventHandlerMap[eventInfo.HandlerName]
+						if found {
+							handlerFunc()
+							clickedElementFound = true // Mark click as handled
+						} else {
+							log.Printf("Warn: Standard click handler named '%s' (for Elem %d) not registered.", eventInfo.HandlerName, el.OriginalIndex)
+						}
+						goto StopProcessingElementEvents // Click handled, move to next element
+					}
+					// Add checks for other standard event types here if needed
+				}
+			}
+		} // End Mouse Click Check
+
+		StopProcessingElementEvents:
+
+		// Optimization: If hovering, stop checking elements below
+		if isHovering {
+			break
 		}
-	}
-	rl.SetMouseCursor(cursor)
+
+	} // End loop through elements
+
+	rl.SetMouseCursor(cursor) // Set final cursor style
 }
 
 // --- Helper Functions ---
@@ -1382,4 +1420,91 @@ func drawContent(el *render.RenderElement, cx, cy, cw, ch int, scale float32, fg
 			log.Printf(">>> DRAW CONTENT SKIP [Elem %d]: Skipping image draw because TextureLoaded is false.", el.OriginalIndex)
 		}
 	}
+}
+
+func (r *RaylibRenderer) RegisterEventHandler(name string, handler func()) {
+	if name == "" || handler == nil {
+		log.Printf("WARN RENDERER: Invalid event handler registration attempt (name: '%s', handler nil: %t)", name, handler == nil)
+		return
+	}
+	if r.eventHandlerMap == nil { r.eventHandlerMap = make(map[string]func()) } // Defensive init
+	if _, exists := r.eventHandlerMap[name]; exists { log.Printf("INFO: Overwriting standard event handler for callback name '%s'", name) }
+	r.eventHandlerMap[name] = handler
+	log.Printf("Registered standard event handler for callback name '%s'", name)
+}
+
+// RegisterCustomComponent: Uses instance map `r.customHandlers`.
+func (r *RaylibRenderer) RegisterCustomComponent(identifier string, handler render.CustomComponentHandler) error {
+	if identifier == "" || handler == nil {
+		return fmt.Errorf("invalid custom component registration (identifier: '%s', handler nil: %t)", identifier, handler == nil)
+	}
+	if r.customHandlers == nil { r.customHandlers = make(map[string]render.CustomComponentHandler) } // Defensive init
+	if _, exists := r.customHandlers[identifier]; exists { log.Printf("INFO: Overwriting custom component handler for identifier '%s'", identifier) }
+	r.customHandlers[identifier] = handler
+	log.Printf("Registered custom component handler for '%s'", identifier)
+	return nil
+}
+func (r *RaylibRenderer) renderElementRecursiveWithCustomDraw(el *render.RenderElement, scale float32) {
+	if el == nil || !el.IsVisible { return }
+
+	skipStandardDraw := false
+	var drawErr error
+
+	// --- Check for Custom Draw Handler ---
+	// --- CHANGE: Explicit Identification ---
+	componentIdentifier, foundName := getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
+	// --- END CHANGE ---
+
+	if foundName && componentIdentifier != "" {
+		if handler, foundHandler := r.customHandlers[componentIdentifier]; foundHandler { // Check instance map
+			// Check if the handler interface actually implements a 'Draw' method (example using type assertion).
+			if drawer, ok := handler.(interface {
+				Draw(el *render.RenderElement, scale float32, rendererInstance render.Renderer) (bool, error)
+			}); ok {
+				// Call the custom Draw method.
+				skipStandardDraw, drawErr = drawer.Draw(el, scale, r)
+				if drawErr != nil {
+					log.Printf("ERROR: Custom Draw handler for '%s' [Elem %d] failed: %v", componentIdentifier, el.OriginalIndex, drawErr)
+				}
+			}
+		}
+	}
+
+	// --- Perform Standard Drawing (if not skipped) ---
+	if !skipStandardDraw {
+		renderElementRecursive(el, scale) // Assumes standard renderElementRecursive exists (unchanged)
+	}
+
+	// --- Recursively Draw Children ---
+	for _, child := range el.Children {
+		r.renderElementRecursiveWithCustomDraw(child, scale) // Recurse with this method
+	}
+}
+
+// ApplyCustomComponentLayoutAdjustments uses instance map `r.customHandlers` and identifies components via `_componentName`.
+func (r *RaylibRenderer) ApplyCustomComponentLayoutAdjustments(elements []*render.RenderElement, doc *krb.Document) { // <<< Changed to method
+    if doc == nil || len(r.customHandlers) == 0 { // Access instance map 'r.customHandlers'.
+        return // Skip if no doc or no handlers registered.
+    }
+
+    for _, el := range elements {
+        if el == nil { continue }
+
+        // Explicit Component Identification using the convention key.
+        // Assumes getCustomPropertyValue exists (likely in custom_component_registry.go or utils)
+        componentIdentifier, found := getCustomPropertyValue(el, componentNameConventionKey, doc)
+
+        if found && componentIdentifier != "" {
+            // Look up handler in the instance map.
+            handler, handlerFound := r.customHandlers[componentIdentifier] // Access instance map.
+
+            if handlerFound {
+                // Call the handler's layout adjustment method.
+                err := handler.HandleLayoutAdjustment(el, doc)
+                if err != nil {
+                    log.Printf("ERROR: Custom layout handler for '%s' [Elem %d] failed: %v", componentIdentifier, el.OriginalIndex, err)
+                }
+            }
+        }
+    }
 }
