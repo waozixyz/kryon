@@ -593,8 +593,9 @@ func (r *RaylibRenderer) renderElementRecursive(el *render.RenderElement, scale 
 	renderW, renderH := el.RenderW, el.RenderH
 
 	if renderW <= 0 || renderH <= 0 {
+		// Skip drawing elements with no size, but still process children
 		for _, child := range el.Children {
-			r.renderElementRecursive(child, scale) // Recurse using the method
+			r.renderElementRecursive(child, scale) // Recursive call using the method 'r.'
 		}
 		return
 	}
@@ -602,12 +603,11 @@ func (r *RaylibRenderer) renderElementRecursive(el *render.RenderElement, scale 
 	scaledU8 := func(v uint8) int { return int(math.Round(float64(v) * float64(scale))) }
 
 	// --- Determine Effective Colors based on IsActive state ---
-	effectiveBgColor := el.BgColor
+	effectiveBgColor := el.BgColor // Start with base colors resolved during PrepareTree
 	effectiveFgColor := el.FgColor
 
-	// --- MODIFIED HEURISTIC ---
 	// Apply dynamic styles if it's a Button AND has style indices set.
-	// No longer checks el.Parent.IsComponentInstance.
+	// *** REMOVED el.Parent.IsComponentInstance check ***
 	isPotentiallyDynamicButton := (el.Header.Type == krb.ElemTypeButton)
 
 	if isPotentiallyDynamicButton && (el.ActiveStyleNameIndex != 0 || el.InactiveStyleNameIndex != 0) {
@@ -616,82 +616,87 @@ func (r *RaylibRenderer) renderElementRecursive(el *render.RenderElement, scale 
 			targetStyleNameIndex = el.ActiveStyleNameIndex
 		}
 
-		// *** MODIFIED: Access doc through r.docRef ***
+		// *** Access doc through r.docRef ***
 		if r.docRef != nil && targetStyleNameIndex != 0 {
 			// Pass r.docRef to helpers
-			targetStyleID := findStyleIDByNameIndex(r.docRef, targetStyleNameIndex)
+			targetStyleID := findStyleIDByNameIndex(r.docRef, targetStyleNameIndex) // Assumes helper exists
 			if targetStyleID != 0 {
 				// Pass r.docRef to helpers
-				bg, fg, ok := getStyleColors(r.docRef, targetStyleID, r.docRef.Header.Flags)
+				bg, fg, ok := getStyleColors(r.docRef, targetStyleID, r.docRef.Header.Flags) // Assumes helper exists
 				if ok {
 					effectiveBgColor = bg
 					effectiveFgColor = fg
-				} else { /* Log Warning */ }
-			} else { /* Log Warning */ }
-		} else if r.docRef == nil { /* Log Warning */ }
+				} else {
+					log.Printf("WARN renderElementRecursive: Could not retrieve colors for Elem %d, StyleID %d (NameIdx %d)", el.OriginalIndex, targetStyleID, targetStyleNameIndex)
+				}
+			} else {
+				log.Printf("WARN renderElementRecursive: Could not find StyleID for Elem %d, Style Name Index %d", el.OriginalIndex, targetStyleNameIndex)
+			}
+		} else if r.docRef == nil {
+			log.Printf("WARN renderElementRecursive: r.docRef is nil, cannot lookup dynamic styles for Elem %d", el.OriginalIndex)
+		}
 	}
 	// --- End Determining Effective Colors ---
 
 	borderColor := el.BorderColor
-	topBW := scaledU8(el.BorderWidths[0]); rightBW := scaledU8(el.BorderWidths[1])
-	bottomBW := scaledU8(el.BorderWidths[2]); leftBW := scaledU8(el.BorderWidths[3])
+	topBW := scaledU8(el.BorderWidths[0])
+	rightBW := scaledU8(el.BorderWidths[1])
+	bottomBW := scaledU8(el.BorderWidths[2])
+	leftBW := scaledU8(el.BorderWidths[3])
+	// Assumes clampOpposingBorders exists
 	topBW, bottomBW = clampOpposingBorders(topBW, bottomBW, renderH)
 	leftBW, rightBW = clampOpposingBorders(leftBW, rightBW, renderW)
 
-	// Draw Background using EFFECTIVE color
+	// --- Draw Background using EFFECTIVE color ---
 	shouldDrawBackground := el.Header.Type != krb.ElemTypeText && effectiveBgColor.A > 0
 	if shouldDrawBackground {
 		rl.DrawRectangle(int32(renderX), int32(renderY), int32(renderW), int32(renderH), effectiveBgColor)
 	}
 
-	// Draw Borders
-	drawBorders(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW, borderColor)
+	// --- Draw Borders ---
+	drawBorders(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW, borderColor) // Assumes drawBorders exists
 
-	// Calculate Content Area
+	// --- Calculate Content Area ---
+	// Assumes calculateContentArea exists
 	contentX, contentY, contentWidth, contentHeight := calculateContentArea(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW)
 
-	// Draw Content using EFFECTIVE foreground color
+	// --- Draw Content using EFFECTIVE foreground color ---
 	if contentWidth > 0 && contentHeight > 0 {
 		rl.BeginScissorMode(int32(contentX), int32(contentY), int32(contentWidth), int32(contentHeight))
-		// *** MODIFIED: Pass r.docRef needed by drawContent's helpers ***
+		// Pass r because drawContent is now also a method
 		r.drawContent(el, contentX, contentY, contentWidth, contentHeight, scale, effectiveFgColor)
 		rl.EndScissorMode()
 	}
 
-	// Recursively Draw Children
+	// --- Recursively Draw Children ---
 	for _, child := range el.Children {
 		r.renderElementRecursive(child, scale) // Call the method recursively
 	}
 }
 
-
 // Cleanup unloads resources and closes the Raylib window.
 func (r *RaylibRenderer) Cleanup() {
 	log.Println("Raylib Cleanup: Unloading textures...")
 	unloadedCount := 0
-	// Unload textures from the cache
 	for resIndex, texture := range r.loadedTextures {
-		if rl.IsTextureReady(texture) {
+		// Check if texture ID is valid before unloading
+		if texture.ID > 0 {
 			rl.UnloadTexture(texture)
 			unloadedCount++
 		}
-		delete(r.loadedTextures, resIndex) // Remove from map
+		delete(r.loadedTextures, resIndex)
 	}
-	log.Printf("Raylib Cleanup: Unloaded %d textures from cache.", unloadedCount) // <<<--- IMPROVED LOG ---<<<
-	r.loadedTextures = make(map[uint8]rl.Texture2D) // Clear map just in case
-
-	// Also ensure elements don't hold dangling references (though GC should handle this)
-	// for i := range r.elements {
-	// 	r.elements[i].Texture = rl.Texture2D{} // Zero out the texture struct
-	// }
+	log.Printf("Raylib Cleanup: Unloaded %d textures from cache.", unloadedCount)
+	r.loadedTextures = make(map[uint8]rl.Texture2D)
 
 	if rl.IsWindowReady() {
 		log.Println("Raylib Cleanup: Closing window...")
 		rl.CloseWindow()
 	} else {
-		log.Println("Raylib Cleanup: Window was already closed or not ready.") // <<<--- ADDED ELSE CASE ---<<<
+		log.Println("Raylib Cleanup: Window was already closed or not ready.")
 	}
 }
+
 // ShouldClose checks if the window close button or ESC key (if enabled) was pressed.
 func (r *RaylibRenderer) ShouldClose() bool {
 	// Check IsWindowReady first to avoid potential issues if called after Cleanup
@@ -859,8 +864,11 @@ func buildElementTree(doc *krb.Document, elements []render.RenderElement, roots 
 
 // applyStylePropertiesToWindowDefaults applies BG color from style to window defaults.
 func applyStylePropertiesToWindowDefaults(props []krb.Property, doc *krb.Document, defaultBg *rl.Color) {
+	if doc == nil || defaultBg == nil { return } // Safety check
+	// Only apply properties relevant to window defaults (e.g., background color).
 	for _, prop := range props {
-		if prop.ID == krb.PropIDBgColor { // Use prop.ID
+		// *** Use prop.ID ***
+		if prop.ID == krb.PropIDBgColor {
 			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
 				*defaultBg = c
 			}
@@ -869,14 +877,15 @@ func applyStylePropertiesToWindowDefaults(props []krb.Property, doc *krb.Documen
 	}
 }
 
-
 func applyStylePropertiesToElement(props []krb.Property, doc *krb.Document, el *render.RenderElement) {
 	if doc == nil || el == nil {
-		return
+		return // Safety check
 	}
 
+	// Iterate through all properties defined in the resolved style block.
 	for _, prop := range props {
-		switch prop.ID { // Use prop.ID
+		// *** Use prop.ID ***
+		switch prop.ID {
 		case krb.PropIDBgColor:
 			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
 				el.BgColor = c
@@ -895,7 +904,6 @@ func applyStylePropertiesToElement(props []krb.Property, doc *krb.Document, el *
 			}
 		case krb.PropIDTextAlignment:
 			if align, ok := getByteValue(&prop); ok {
-				// Basic validation could be added: if align <= krb.LayoutAlignmentSpaceBtn { ... }
 				el.TextAlignment = align
 			}
 		case krb.PropIDVisibility:
@@ -904,19 +912,10 @@ func applyStylePropertiesToElement(props []krb.Property, doc *krb.Document, el *
 			}
 		case krb.PropIDOpacity:
 			if opacity, ok := getByteValue(&prop); ok {
-				// TODO: Decide how style opacity interacts with color alpha.
-				// Currently ignored, assuming alpha is handled by color values.
-				_ = opacity // Placeholder to avoid unused variable error
-				// Example: Modify alpha directly if needed:
-				// el.BgColor.A = opacity
-				// el.FgColor.A = opacity
+				_ = opacity // Placeholder
+				// TODO: Apply opacity if needed
 			}
-		// Add other styleable properties here (FontSize, Padding, etc.) as needed
-		// case krb.PropIDFontSize:
-		//	 if fs, ok := getShortValue(&prop); ok { el.FontSize = fs } // Assuming RenderElement has FontSize
-		// case krb.PropIDPadding:
-		//	 if edges, ok := getEdgeInsetsValue(&prop); ok { el.Padding = edges } // Assuming RenderElement has Padding
-
+			// --- Add other styleable properties from previous correct versions ---
 		}
 	}
 }
@@ -1066,179 +1065,84 @@ func (r *RaylibRenderer) LoadAllTextures() error {
 }
 
 func (r *RaylibRenderer) performTextureLoading(doc *krb.Document, errorCounter *int) {
-	if doc == nil {
-		log.Println("Error(performTextureLoading): doc is nil")
-		*errorCounter++
-		return
-	}
-	if r.elements == nil {
-		log.Println("Error(performTextureLoading): r.elements is nil")
-		*errorCounter++
-		return
-	}
+	if doc == nil { *errorCounter++; return }
+	if r.elements == nil { *errorCounter++; return }
 
 	for i := range r.elements {
-		el := &r.elements[i] // Use pointer directly
-
-		// Skip if not an image/button or no valid resource index
-		needsTexture := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton) &&
-			el.ResourceIndex != render.InvalidResourceIndex
-		if !needsTexture {
-			continue
-		}
+		el := &r.elements[i]
+		needsTexture := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton) && el.ResourceIndex != render.InvalidResourceIndex
+		if !needsTexture { continue }
 
 		resIndex := el.ResourceIndex
-
-		// Validate resource index against document resources
 		if int(resIndex) >= len(doc.Resources) {
 			log.Printf("Error: Elem %d has invalid resource index %d (max %d)", el.OriginalIndex, resIndex, len(doc.Resources)-1)
-			*errorCounter++
-			el.TextureLoaded = false // Ensure it's marked as not loaded
-			continue
+			*errorCounter++; el.TextureLoaded = false; continue
 		}
 		res := doc.Resources[resIndex]
 
 		// Check cache first
 		if loadedTex, exists := r.loadedTextures[resIndex]; exists {
 			el.Texture = loadedTex
-			el.TextureLoaded = rl.IsTextureReady(loadedTex)
-			if !el.TextureLoaded {
-				log.Printf("Warn: Cached texture for Res %d (Elem %d) is no longer ready.", resIndex, el.OriginalIndex)
-				*errorCounter++
-			} else {
-				// <<<--- ADDED CACHE HIT LOG ---<<<
-				log.Printf("DEBUG [Elem %d]: Using cached texture Res %d (ID: %d)", el.OriginalIndex, resIndex, loadedTex.ID)
-			}
-			continue // Move to next element
+			el.TextureLoaded = (loadedTex.ID > 0) // Use ID check
+			if !el.TextureLoaded { log.Printf("Warn: Cached texture for Res %d (Elem %d) is no longer ready.", resIndex, el.OriginalIndex); *errorCounter++ }
+			continue
 		}
 
-		// --- Texture not in cache, attempt loading ---
 		var texture rl.Texture2D
 		loadedOk := false
 
 		if res.Format == krb.ResFormatExternal {
-			// Validate name index
-			if int(res.NameIndex) >= len(doc.Strings) {
-				log.Printf("Error: External Resource %d (Elem %d) has invalid name index %d", resIndex, el.OriginalIndex, res.NameIndex)
-				*errorCounter++
-				el.TextureLoaded = false
-				continue
-			}
+			if int(res.NameIndex) >= len(doc.Strings) { /* Log error */ *errorCounter++; el.TextureLoaded = false; continue }
 			resourceName := doc.Strings[res.NameIndex]
 			fullPath := filepath.Join(r.krbFileDir, resourceName)
-			log.Printf("INFO: Attempting to load external texture: %s (for Res %d, Elem %d)", fullPath, resIndex, el.OriginalIndex)
-
-			// Check file existence first
 			if _, statErr := os.Stat(fullPath); os.IsNotExist(statErr) {
-				log.Printf("Error: Texture file not found: %s (for Res %d, Elem %d)", fullPath, resIndex, el.OriginalIndex)
-				*errorCounter++
-				el.TextureLoaded = false
+				log.Printf("Error: Texture file not found: %s", fullPath)
+				*errorCounter++; el.TextureLoaded = false
 			} else {
-				// Load image data from file to CPU memory
 				img := rl.LoadImage(fullPath)
-				// <<<--- ADDED LOG ---<<<
-				log.Printf("DEBUG [Elem %d]: rl.LoadImage returned. IsImageReady(img): %t", el.OriginalIndex, rl.IsImageReady(img)) // Log LoadImage success
-
-				if rl.IsImageReady(img) {
-					// --- GPU Upload Attempt ---
-					if !rl.IsWindowReady() {
-						log.Printf("CRITICAL ERROR: Window became not ready before LoadTextureFromImage for %s", fullPath)
-						*errorCounter++
-						el.TextureLoaded = false
+				// Check if image loaded successfully using its data/dimensions
+				imageReady := img.Data != nil && img.Width > 0 && img.Height > 0
+				if imageReady {
+					if !rl.IsWindowReady() { /* Log critical error */ *errorCounter++; el.TextureLoaded = false
 					} else {
-						// <<<--- ADDED LOG ---<<<
-						log.Printf("DEBUG [Elem %d]: Calling LoadTextureFromImage for %s...", el.OriginalIndex, fullPath)
 						texture = rl.LoadTextureFromImage(img)
-						// <<<--- ADDED LOG ---<<<
-						log.Printf("DEBUG [Elem %d]: Returned from LoadTextureFromImage. Texture ID: %d", el.OriginalIndex, texture.ID) // Log the ID
-
-						isReady := rl.IsTextureReady(texture)
-						// <<<--- ADDED LOG ---<<<
-						log.Printf("DEBUG [Elem %d]: rl.IsTextureReady(texture) returned: %t", el.OriginalIndex, isReady) // Log readiness
-
-						if isReady {
-							loadedOk = true
-							// log.Printf("  OK: Loaded external texture Res %d ('%s') -> ID:%d", resIndex, resourceName, texture.ID) // Keep OK log minimal for now
-						} else {
-							log.Printf("Error: Failed IsTextureReady check for texture Res %d (Elem %d) after LoadTextureFromImage.", resIndex, el.OriginalIndex)
-							*errorCounter++
-							// el.TextureLoaded = false // This will be set later based on loadedOk
-						}
+						// Check if texture was created successfully using its ID
+						isReady := texture.ID > 0
+						if isReady { loadedOk = true } else { log.Printf("Error: Failed IsTextureReady check (ID==0) for texture Res %d after LoadTextureFromImage.", resIndex); *errorCounter++ }
 					}
-					// --- End GPU Upload Attempt ---
 					rl.UnloadImage(img)
-				} else {
-					log.Printf("Error: Failed LoadImage (CPU) for %s (Res %d, Elem %d). Cannot create texture.", fullPath, resIndex, el.OriginalIndex)
-					*errorCounter++
-					// el.TextureLoaded = false // Set later
-				}
+				} else { log.Printf("Error: Failed LoadImage (CPU) for %s", fullPath); *errorCounter++ }
 			}
 		} else if res.Format == krb.ResFormatInline {
-			// Handling for inline data
 			if res.InlineData != nil && res.InlineDataSize > 0 {
-				ext := ".png"; if int(res.NameIndex) < len(doc.Strings) { nameHint := doc.Strings[res.NameIndex]; if nameExt := filepath.Ext(nameHint); nameExt != "" { ext = nameExt } }
-				log.Printf("INFO: Attempting to load inline texture Res %d (Elem %d) (hint: %s, size: %d bytes)", resIndex, el.OriginalIndex, ext, len(res.InlineData))
-
+				ext := ".png"; if int(res.NameIndex) < len(doc.Strings) { /* Determine ext from hint */ }
 				img := rl.LoadImageFromMemory(ext, res.InlineData, int32(len(res.InlineData)))
-				// <<<--- ADDED LOG ---<<<
-				log.Printf("DEBUG [Elem %d]: rl.LoadImageFromMemory returned. IsImageReady(img): %t", el.OriginalIndex, rl.IsImageReady(img)) // Log LoadImage success
-
-				if rl.IsImageReady(img) {
-					if !rl.IsWindowReady() {
-						log.Printf("CRITICAL ERROR: Window became not ready before LoadTextureFromImage for inline Res %d", resIndex)
-						*errorCounter++
-						el.TextureLoaded = false
+				// Check if image loaded successfully
+				imageReady := img.Data != nil && img.Width > 0 && img.Height > 0
+				if imageReady {
+					if !rl.IsWindowReady() { /* Log critical error */ *errorCounter++; el.TextureLoaded = false
 					} else {
-						// <<<--- ADDED LOG ---<<<
-						log.Printf("DEBUG [Elem %d]: Calling LoadTextureFromImage for inline Res %d...", el.OriginalIndex, resIndex)
 						texture = rl.LoadTextureFromImage(img)
-						// <<<--- ADDED LOG ---<<<
-						log.Printf("DEBUG [Elem %d]: Returned from LoadTextureFromImage. Texture ID: %d", el.OriginalIndex, texture.ID) // Log the ID
-
-						isReady := rl.IsTextureReady(texture)
-						// <<<--- ADDED LOG ---<<<
-						log.Printf("DEBUG [Elem %d]: rl.IsTextureReady(texture) returned: %t", el.OriginalIndex, isReady) // Log readiness
-
-						if isReady {
-							loadedOk = true
-							// log.Printf("  OK: Loaded inline texture Res %d -> ID:%d (hint: %s)", resIndex, texture.ID, ext)
-						} else {
-							log.Printf("Error: Failed IsTextureReady check for inline texture Res %d (Elem %d) after LoadTextureFromImage.", resIndex, el.OriginalIndex)
-							*errorCounter++
-							// el.TextureLoaded = false // Set later
-						}
+						// Check if texture was created successfully
+						isReady := texture.ID > 0
+						if isReady { loadedOk = true } else { log.Printf("Error: Failed IsTextureReady check (ID==0) for inline texture Res %d after LoadTextureFromImage.", resIndex); *errorCounter++ }
 					}
 					rl.UnloadImage(img)
-				} else {
-					log.Printf("Error: Failed LoadImageFromMemory (CPU) for inline Res %d (Elem %d) (hint: %s)", resIndex, el.OriginalIndex, ext)
-					*errorCounter++
-					// el.TextureLoaded = false // Set later
-				}
-			} else {
-				log.Printf("Error: Inline Resource %d (Elem %d) has no data or zero size", resIndex, el.OriginalIndex)
-				*errorCounter++
-				// el.TextureLoaded = false // Set later
-			}
-		} else {
-			log.Printf("Warn: Unknown resource format %d for Res %d (Elem %d)", res.Format, resIndex, el.OriginalIndex)
-			*errorCounter++
-			// el.TextureLoaded = false // Set later
-		}
+				} else { log.Printf("Error: Failed LoadImageFromMemory (CPU) for inline Res %d", resIndex); *errorCounter++ }
+			} else { log.Printf("Error: Inline Resource %d has no data", resIndex); *errorCounter++ }
+		} else { log.Printf("Warn: Unknown resource format %d", res.Format); *errorCounter++ }
 
-		// Store texture in element and cache if loaded successfully
-		if loadedOk { // Check the flag we set based on IsTextureReady
-			// <<<--- ADDED LOG ---<<<
-			log.Printf("DEBUG [Elem %d]: Setting TextureLoaded=true and caching Res %d (ID: %d)", el.OriginalIndex, resIndex, texture.ID)
+		// Store texture and cache if loaded successfully
+		if loadedOk {
 			el.Texture = texture
 			el.TextureLoaded = true
-			r.loadedTextures[resIndex] = texture // Add to cache
+			r.loadedTextures[resIndex] = texture
 		} else {
-			// <<<--- ADDED LOG ---<<<
-			log.Printf("DEBUG [Elem %d]: Setting TextureLoaded=false for Res %d because loadedOk is false.", el.OriginalIndex, resIndex)
 			el.TextureLoaded = false
 		}
-	} // End loop through elements
-} // End of performTextureLoading function
+	}
+}
+
 
 // hasStyleSize checks if style includes size properties.
 func hasStyleSize(doc *krb.Document, el *render.RenderElement, propIDMax, propIDNormal krb.PropertyID) bool {
@@ -1456,38 +1360,62 @@ func calculateContentArea(x, y, w, h, top, right, bottom, left int) (cx, cy, cw,
 
 // drawContent renders the specific content (text or image) for an element
 // using the provided *effective* foreground color determined by the caller.
-
 func (r *RaylibRenderer) drawContent(el *render.RenderElement, cx, cy, cw, ch int, scale float32, effectiveFgColor rl.Color) {
 
-	// Draw Text if applicable
+	// --- Draw Text ---
+	// Check if the element type is Text or Button and if there's text content.
 	if (el.Header.Type == krb.ElemTypeText || el.Header.Type == krb.ElemTypeButton) && el.Text != "" {
+		// Calculate scaled font size.
 		fontSize := int32(math.Max(1, math.Round(baseFontSize*float64(scale))))
+		// Measure text dimensions for alignment calculations.
 		textWidthMeasured := rl.MeasureText(el.Text, fontSize)
+		// Approximate text height based on font size for vertical centering.
 		textHeightMeasured := fontSize
+		// Initial draw position is the top-left of the content area.
 		textDrawX := cx
+		// Vertically center the text within the content height.
 		textDrawY := cy + (ch-int(textHeightMeasured))/2
 
+		// Apply horizontal text alignment based on element's property.
 		switch el.TextAlignment {
-		case krb.LayoutAlignCenter: textDrawX = cx + (cw-int(textWidthMeasured))/2
-		case krb.LayoutAlignEnd: textDrawX = cx + cw - int(textWidthMeasured)
+		case krb.LayoutAlignCenter: // Center align
+			textDrawX = cx + (cw-int(textWidthMeasured))/2
+		case krb.LayoutAlignEnd: // Right align
+			textDrawX = cx + cw - int(textWidthMeasured)
+			// Default (krb.LayoutAlignStart) keeps textDrawX = cx (Left align).
 		}
+		// Draw the text using the calculated position, size, and effective color.
 		rl.DrawText(el.Text, int32(textDrawX), int32(textDrawY), fontSize, effectiveFgColor)
 	}
 
-	// Draw Image if applicable
+	// --- Draw Image ---
+	// Check if the element type is Image or Button and if a texture was successfully loaded.
 	isImageElement := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton)
 	if isImageElement && el.TextureLoaded {
-		if rl.IsTextureReady(el.Texture) {
+		// Check texture validity using its ID before accessing Width/Height.
+		// A non-zero ID typically indicates a valid texture handle.
+		if el.Texture.ID > 0 {
+			// Get texture dimensions.
 			texWidth := float32(el.Texture.Width)
 			texHeight := float32(el.Texture.Height)
+
+			// Define the source rectangle (usually the whole texture).
 			sourceRec := rl.NewRectangle(0, 0, texWidth, texHeight)
+			// Define the destination rectangle within the element's content area.
 			destRec := rl.NewRectangle(float32(cx), float32(cy), float32(cw), float32(ch))
+			// Define origin for rotation/scaling (typically top-left).
 			origin := rl.NewVector2(0, 0)
+			// Define tint color (usually white for no tint).
 			tintColor := rl.White
 
+			// Check for valid drawing dimensions before calling Raylib function.
 			if destRec.Width > 0 && destRec.Height > 0 && sourceRec.Width > 0 && sourceRec.Height > 0 {
+				// Draw the texture stretched/scaled into the destination rectangle.
 				rl.DrawTexturePro(el.Texture, sourceRec, destRec, origin, 0.0, tintColor)
 			}
+		} else {
+			// Log a warning if TextureLoaded was true but the ID check failed.
+			log.Printf("WARN drawContent: Elem %d TextureLoaded is true, but texture ID is 0! Skipping image draw.", el.OriginalIndex)
 		}
 	}
 }
