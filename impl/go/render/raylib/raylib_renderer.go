@@ -581,78 +581,89 @@ func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, pa
 	}
 } // End PerformLayoutChildren
 
-
 // renderElementRecursive draws an element and its children recursively based on final layout.
-func renderElementRecursive(el *render.RenderElement, scale float32) {
-	if el == nil {
-		return // Safety check for nil element
+// It determines effective colors based on IsActive state before drawing.
+
+func (r *RaylibRenderer) renderElementRecursive(el *render.RenderElement, scale float32) {
+	if el == nil || !el.IsVisible {
+		return
 	}
 
-	// --- Check Visibility ---
-	if !el.IsVisible {
-		return // Skip drawing if element is explicitly hidden
-	}
-
-	// Get final calculated coordinates and dimensions from the RenderElement struct
 	renderX, renderY := el.RenderX, el.RenderY
 	renderW, renderH := el.RenderW, el.RenderH
 
-	// Only draw elements that have a positive size after layout
-	if renderW > 0 && renderH > 0 {
-
-		// --- Setup for Drawing ---
-		scaledU8 := func(v uint8) int { return int(math.Round(float64(v) * float64(scale))) }
-		bgColor := el.BgColor
-		fgColor := el.FgColor
-		borderColor := el.BorderColor
-		topBW := scaledU8(el.BorderWidths[0])
-		rightBW := scaledU8(el.BorderWidths[1])
-		bottomBW := scaledU8(el.BorderWidths[2])
-		leftBW := scaledU8(el.BorderWidths[3])
-
-		// Clamp borders to prevent overlap if element is too small
-		topBW, bottomBW = clampOpposingBorders(topBW, bottomBW, renderH)
-		leftBW, rightBW = clampOpposingBorders(leftBW, rightBW, renderW)
-
-		// --- Draw Background (Check for Transparency) ---
-		// We check Alpha channel. rl.Blank is {0, 0, 0, 0}.
-		shouldDrawBackground := el.Header.Type != krb.ElemTypeText && bgColor.A > 0
-
-		if shouldDrawBackground {
-			rl.DrawRectangle(int32(renderX), int32(renderY), int32(renderW), int32(renderH), bgColor)
-		} else {
-			// Optional log: log.Printf("DEBUG Render [%s]: Skipping background draw (Type is Text or BgColor.A == 0).", elIDStr)
+	if renderW <= 0 || renderH <= 0 {
+		for _, child := range el.Children {
+			r.renderElementRecursive(child, scale) // Recurse using the method
 		}
-
-		// --- Draw Borders ---
-		drawBorders(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW, borderColor)
-
-		// --- Calculate Content Area (Inside Borders) ---
-		contentX, contentY, contentWidth, contentHeight := calculateContentArea(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW)
-
-		// --- Draw Content (Text/Image) within the Content Area ---
-		if contentWidth > 0 && contentHeight > 0 {
-			// Use Scissor to clip content drawing to the calculated content area
-			rl.BeginScissorMode(int32(contentX), int32(contentY), int32(contentWidth), int32(contentHeight))
-
-			// Delegate to drawContent helper (which handles Text vs Image)
-			// Pass fgColor as it's used for text color.
-			drawContent(el, contentX, contentY, contentWidth, contentHeight, scale, fgColor)
-
-			rl.EndScissorMode() // Stop clipping
-		}
-
-	} else { // Element size is zero or negative
-		// Optional log: log.Printf("DEBUG Render [%s]: Skipping draw (Zero/Negative Size: %dx%d)", elIDStr, renderW, renderH)
+		return
 	}
 
-	// --- Recursively Draw Children ---
-	// Children are drawn after the parent, appearing visually on top.
+	scaledU8 := func(v uint8) int { return int(math.Round(float64(v) * float64(scale))) }
+
+	// --- Determine Effective Colors based on IsActive state ---
+	effectiveBgColor := el.BgColor
+	effectiveFgColor := el.FgColor
+
+	// --- MODIFIED HEURISTIC ---
+	// Apply dynamic styles if it's a Button AND has style indices set.
+	// No longer checks el.Parent.IsComponentInstance.
+	isPotentiallyDynamicButton := (el.Header.Type == krb.ElemTypeButton)
+
+	if isPotentiallyDynamicButton && (el.ActiveStyleNameIndex != 0 || el.InactiveStyleNameIndex != 0) {
+		targetStyleNameIndex := el.InactiveStyleNameIndex
+		if el.IsActive {
+			targetStyleNameIndex = el.ActiveStyleNameIndex
+		}
+
+		// *** MODIFIED: Access doc through r.docRef ***
+		if r.docRef != nil && targetStyleNameIndex != 0 {
+			// Pass r.docRef to helpers
+			targetStyleID := findStyleIDByNameIndex(r.docRef, targetStyleNameIndex)
+			if targetStyleID != 0 {
+				// Pass r.docRef to helpers
+				bg, fg, ok := getStyleColors(r.docRef, targetStyleID, r.docRef.Header.Flags)
+				if ok {
+					effectiveBgColor = bg
+					effectiveFgColor = fg
+				} else { /* Log Warning */ }
+			} else { /* Log Warning */ }
+		} else if r.docRef == nil { /* Log Warning */ }
+	}
+	// --- End Determining Effective Colors ---
+
+	borderColor := el.BorderColor
+	topBW := scaledU8(el.BorderWidths[0]); rightBW := scaledU8(el.BorderWidths[1])
+	bottomBW := scaledU8(el.BorderWidths[2]); leftBW := scaledU8(el.BorderWidths[3])
+	topBW, bottomBW = clampOpposingBorders(topBW, bottomBW, renderH)
+	leftBW, rightBW = clampOpposingBorders(leftBW, rightBW, renderW)
+
+	// Draw Background using EFFECTIVE color
+	shouldDrawBackground := el.Header.Type != krb.ElemTypeText && effectiveBgColor.A > 0
+	if shouldDrawBackground {
+		rl.DrawRectangle(int32(renderX), int32(renderY), int32(renderW), int32(renderH), effectiveBgColor)
+	}
+
+	// Draw Borders
+	drawBorders(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW, borderColor)
+
+	// Calculate Content Area
+	contentX, contentY, contentWidth, contentHeight := calculateContentArea(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW)
+
+	// Draw Content using EFFECTIVE foreground color
+	if contentWidth > 0 && contentHeight > 0 {
+		rl.BeginScissorMode(int32(contentX), int32(contentY), int32(contentWidth), int32(contentHeight))
+		// *** MODIFIED: Pass r.docRef needed by drawContent's helpers ***
+		r.drawContent(el, contentX, contentY, contentWidth, contentHeight, scale, effectiveFgColor)
+		rl.EndScissorMode()
+	}
+
+	// Recursively Draw Children
 	for _, child := range el.Children {
-		renderElementRecursive(child, scale) // Pass scale down
+		r.renderElementRecursive(child, scale) // Call the method recursively
 	}
+}
 
-} // End renderElementRecursive
 
 // Cleanup unloads resources and closes the Raylib window.
 func (r *RaylibRenderer) Cleanup() {
@@ -849,31 +860,63 @@ func buildElementTree(doc *krb.Document, elements []render.RenderElement, roots 
 // applyStylePropertiesToWindowDefaults applies BG color from style to window defaults.
 func applyStylePropertiesToWindowDefaults(props []krb.Property, doc *krb.Document, defaultBg *rl.Color) {
 	for _, prop := range props {
-		if prop.ID == krb.PropIDBgColor {
+		if prop.ID == krb.PropIDBgColor { // Use prop.ID
 			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
 				*defaultBg = c
 			}
 		}
+		// Add other window-level style properties if needed later.
 	}
 }
 
-// applyStylePropertiesToElement applies style properties to an element.
+
 func applyStylePropertiesToElement(props []krb.Property, doc *krb.Document, el *render.RenderElement) {
+	if doc == nil || el == nil {
+		return
+	}
+
 	for _, prop := range props {
-		switch prop.ID {
+		switch prop.ID { // Use prop.ID
 		case krb.PropIDBgColor:
-			if c, ok := getColorValue(&prop, doc.Header.Flags); ok { el.BgColor = c }
+			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
+				el.BgColor = c
+			}
 		case krb.PropIDFgColor:
-			if c, ok := getColorValue(&prop, doc.Header.Flags); ok { el.FgColor = c }
+			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
+				el.FgColor = c
+			}
 		case krb.PropIDBorderColor:
-			if c, ok := getColorValue(&prop, doc.Header.Flags); ok { el.BorderColor = c }
+			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
+				el.BorderColor = c
+			}
 		case krb.PropIDBorderWidth:
-			if bw, ok := getByteValue(&prop); ok { el.BorderWidths = [4]uint8{bw, bw, bw, bw} }
+			if bw, ok := getByteValue(&prop); ok {
+				el.BorderWidths = [4]uint8{bw, bw, bw, bw}
+			}
 		case krb.PropIDTextAlignment:
-			if align, ok := getByteValue(&prop); ok { el.TextAlignment = align }
+			if align, ok := getByteValue(&prop); ok {
+				// Basic validation could be added: if align <= krb.LayoutAlignmentSpaceBtn { ... }
+				el.TextAlignment = align
+			}
 		case krb.PropIDVisibility:
-			if vis, ok := getByteValue(&prop); ok { el.IsVisible = (vis != 0) }
-		// Add other styleable properties here
+			if vis, ok := getByteValue(&prop); ok {
+				el.IsVisible = (vis != 0)
+			}
+		case krb.PropIDOpacity:
+			if opacity, ok := getByteValue(&prop); ok {
+				// TODO: Decide how style opacity interacts with color alpha.
+				// Currently ignored, assuming alpha is handled by color values.
+				_ = opacity // Placeholder to avoid unused variable error
+				// Example: Modify alpha directly if needed:
+				// el.BgColor.A = opacity
+				// el.FgColor.A = opacity
+			}
+		// Add other styleable properties here (FontSize, Padding, etc.) as needed
+		// case krb.PropIDFontSize:
+		//	 if fs, ok := getShortValue(&prop); ok { el.FontSize = fs } // Assuming RenderElement has FontSize
+		// case krb.PropIDPadding:
+		//	 if edges, ok := getEdgeInsetsValue(&prop); ok { el.Padding = edges } // Assuming RenderElement has Padding
+
 		}
 	}
 }
@@ -1219,6 +1262,62 @@ func getStylePropertyValue(style *krb.Style, propID krb.PropertyID) (*krb.Proper
 	return nil, false
 }
 
+func findStyleIDByNameIndex(doc *krb.Document, nameIndex uint8) uint8 {
+	if doc == nil || nameIndex == 0 {
+		return 0
+	}
+	// KRB Style Blocks are 1-based indexed in the header, but stored 0-based in the slice.
+	// The krb.Style struct holds the 1-based ID.
+	for i := range doc.Styles {
+		// Compare the NameIndex field of the Style Block Header
+		if doc.Styles[i].NameIndex == nameIndex {
+			return doc.Styles[i].ID // Return the 1-based ID
+		}
+	}
+	return 0 // Not found
+}
+
+
+func getStyleColors(doc *krb.Document, styleID uint8, flags uint16) (bg rl.Color, fg rl.Color, ok bool) {
+	if doc == nil || styleID == 0 {
+		return rl.Blank, rl.White, false // Cannot look up style 0 or without doc
+	}
+	// Adjust ID to be 0-based index for the slice
+	styleIndex := int(styleID - 1)
+	if styleIndex < 0 || styleIndex >= len(doc.Styles) {
+		log.Printf("WARN getStyleColors: Invalid style index %d (derived from ID %d)", styleIndex, styleID)
+		return rl.Blank, rl.White, false // Invalid index
+	}
+
+	style := &doc.Styles[styleIndex]
+	// Default colors if not found in style
+	bg = rl.Blank // Default to transparent background
+	fg = rl.White // Default to white foreground
+
+	foundBg := false
+	foundFg := false
+
+	// Iterate through the resolved properties of the target style
+	for _, prop := range style.Properties {
+		// *** MODIFIED: Use prop.ID instead of prop.PropertyID ***
+		if prop.ID == krb.PropIDBgColor {
+			if c, propOk := getColorValue(&prop, flags); propOk {
+				bg = c
+				foundBg = true
+			}
+		// *** MODIFIED: Use prop.ID instead of prop.PropertyID ***
+		} else if prop.ID == krb.PropIDFgColor {
+			if c, propOk := getColorValue(&prop, flags); propOk {
+				fg = c
+				foundFg = true
+			}
+		}
+		if foundBg && foundFg { break } // Optimization
+	}
+	ok = true // Consider successful even if defaults used
+	return bg, fg, ok
+}
+
 // --- Value Parsing Helper Functions ---
 func getColorValue(prop *krb.Property, flags uint16) (rl.Color, bool) {
 	if prop == nil || prop.ValueType != krb.ValTypeColor { return rl.Color{}, false }
@@ -1355,72 +1454,44 @@ func calculateContentArea(x, y, w, h, top, right, bottom, left int) (cx, cy, cw,
 	return cx, cy, cw, ch
 }
 
-func drawContent(el *render.RenderElement, cx, cy, cw, ch int, scale float32, fgColor rl.Color) {
-	// Draw Text (keep this part as is)
+// drawContent renders the specific content (text or image) for an element
+// using the provided *effective* foreground color determined by the caller.
+
+func (r *RaylibRenderer) drawContent(el *render.RenderElement, cx, cy, cw, ch int, scale float32, effectiveFgColor rl.Color) {
+
+	// Draw Text if applicable
 	if (el.Header.Type == krb.ElemTypeText || el.Header.Type == krb.ElemTypeButton) && el.Text != "" {
 		fontSize := int32(math.Max(1, math.Round(baseFontSize*float64(scale))))
 		textWidthMeasured := rl.MeasureText(el.Text, fontSize)
-		textHeightMeasured := fontSize // Approximation
+		textHeightMeasured := fontSize
 		textDrawX := cx
+		textDrawY := cy + (ch-int(textHeightMeasured))/2
+
 		switch el.TextAlignment {
 		case krb.LayoutAlignCenter: textDrawX = cx + (cw-int(textWidthMeasured))/2
-		case krb.LayoutAlignEnd:    textDrawX = cx + cw - int(textWidthMeasured)
+		case krb.LayoutAlignEnd: textDrawX = cx + cw - int(textWidthMeasured)
 		}
-		textDrawY := cy + (ch-int(textHeightMeasured))/2 // Always center vertically
-		rl.DrawText(el.Text, int32(textDrawX), int32(textDrawY), fontSize, fgColor)
+		rl.DrawText(el.Text, int32(textDrawX), int32(textDrawY), fontSize, effectiveFgColor)
 	}
 
-	// --- Debugging Image Drawing ---
+	// Draw Image if applicable
 	isImageElement := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton)
-
-	if isImageElement {
-		// Log whether the conditions to draw are met *before* the check
-		log.Printf(">>> DRAW CONTENT CHECK [Elem %d]: IsImageElement=%t, TextureLoaded=%t",
-			el.OriginalIndex, isImageElement, el.TextureLoaded)
-
-		if el.TextureLoaded {
-			// Log the parameters JUST before calling DrawTexturePro
-			texWidth := float32(0)
-			texHeight := float32(0)
-			texId := uint32(0)
-			if rl.IsTextureReady(el.Texture) { // Add extra safety check
-				texWidth = float32(el.Texture.Width)
-				texHeight = float32(el.Texture.Height)
-				texId = el.Texture.ID
-			} else {
-				log.Printf(">>> DRAW CONTENT WARN [Elem %d]: TextureLoaded is true, but IsTextureReady is false!", el.OriginalIndex)
-			}
-
+	if isImageElement && el.TextureLoaded {
+		if rl.IsTextureReady(el.Texture) {
+			texWidth := float32(el.Texture.Width)
+			texHeight := float32(el.Texture.Height)
 			sourceRec := rl.NewRectangle(0, 0, texWidth, texHeight)
 			destRec := rl.NewRectangle(float32(cx), float32(cy), float32(cw), float32(ch))
 			origin := rl.NewVector2(0, 0)
-			tintColor := rl.White // Explicitly use White
+			tintColor := rl.White
 
-			log.Printf(">>> DRAW CONTENT PARAMS [Elem %d]: TextureID=%d | Source=(%.1f,%.1f %.1fx%.1f) | Dest=(%.1f,%.1f %.1fx%.1f) | Tint=(%d,%d,%d,%d)",
-				el.OriginalIndex, texId,
-				sourceRec.X, sourceRec.Y, sourceRec.Width, sourceRec.Height,
-				destRec.X, destRec.Y, destRec.Width, destRec.Height,
-				tintColor.R, tintColor.G, tintColor.B, tintColor.A)
-
-			// Check if destination rectangle has valid size
-			if destRec.Width <= 0 || destRec.Height <= 0 {
-				log.Printf(">>> DRAW CONTENT WARN [Elem %d]: Destination rectangle has zero or negative size (%.1fx%.1f), skipping DrawTexturePro.",
-					el.OriginalIndex, destRec.Width, destRec.Height)
-			} else if sourceRec.Width <= 0 || sourceRec.Height <= 0 {
-				log.Printf(">>> DRAW CONTENT WARN [Elem %d]: Source rectangle has zero or negative size (%.1fx%.1f), skipping DrawTexturePro.",
-					el.OriginalIndex, sourceRec.Width, sourceRec.Height)
-			} else {
-				// The actual draw call
-				log.Printf(">>> DRAW CONTENT ACTION [Elem %d]: Calling DrawTexturePro...", el.OriginalIndex)
+			if destRec.Width > 0 && destRec.Height > 0 && sourceRec.Width > 0 && sourceRec.Height > 0 {
 				rl.DrawTexturePro(el.Texture, sourceRec, destRec, origin, 0.0, tintColor)
-				log.Printf(">>> DRAW CONTENT ACTION [Elem %d]: Returned from DrawTexturePro.", el.OriginalIndex)
 			}
-
-		} else {
-			log.Printf(">>> DRAW CONTENT SKIP [Elem %d]: Skipping image draw because TextureLoaded is false.", el.OriginalIndex)
 		}
 	}
 }
+
 
 func (r *RaylibRenderer) RegisterEventHandler(name string, handler func()) {
 	if name == "" || handler == nil {
@@ -1444,40 +1515,32 @@ func (r *RaylibRenderer) RegisterCustomComponent(identifier string, handler rend
 	log.Printf("Registered custom component handler for '%s'", identifier)
 	return nil
 }
+
 func (r *RaylibRenderer) renderElementRecursiveWithCustomDraw(el *render.RenderElement, scale float32) {
 	if el == nil || !el.IsVisible { return }
 
 	skipStandardDraw := false
 	var drawErr error
 
-	// --- Check for Custom Draw Handler ---
-	// --- CHANGE: Explicit Identification ---
+	// Check for Custom Draw Handler using component name
 	componentIdentifier, foundName := getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
-	// --- END CHANGE ---
-
 	if foundName && componentIdentifier != "" {
-		if handler, foundHandler := r.customHandlers[componentIdentifier]; foundHandler { // Check instance map
-			// Check if the handler interface actually implements a 'Draw' method (example using type assertion).
-			if drawer, ok := handler.(interface {
-				Draw(el *render.RenderElement, scale float32, rendererInstance render.Renderer) (bool, error)
-			}); ok {
-				// Call the custom Draw method.
+		if handler, foundHandler := r.customHandlers[componentIdentifier]; foundHandler {
+			if drawer, ok := handler.(interface { Draw(el *render.RenderElement, scale float32, rendererInstance render.Renderer) (bool, error) }); ok {
 				skipStandardDraw, drawErr = drawer.Draw(el, scale, r)
-				if drawErr != nil {
-					log.Printf("ERROR: Custom Draw handler for '%s' [Elem %d] failed: %v", componentIdentifier, el.OriginalIndex, drawErr)
-				}
+				if drawErr != nil { log.Printf("ERROR: Custom Draw handler for '%s' [Elem %d] failed: %v", componentIdentifier, el.OriginalIndex, drawErr) }
 			}
 		}
 	}
 
-	// --- Perform Standard Drawing (if not skipped) ---
+	// Perform Standard Drawing (if not skipped)
 	if !skipStandardDraw {
-		renderElementRecursive(el, scale) // Assumes standard renderElementRecursive exists (unchanged)
+		r.renderElementRecursive(el, scale) // <<< CALL THE METHOD VERSION
 	}
 
-	// --- Recursively Draw Children ---
+	// Recursively Draw Children (using this function to allow custom child drawing)
 	for _, child := range el.Children {
-		r.renderElementRecursiveWithCustomDraw(child, scale) // Recurse with this method
+		r.renderElementRecursiveWithCustomDraw(child, scale)
 	}
 }
 

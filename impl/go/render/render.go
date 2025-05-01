@@ -51,6 +51,10 @@ type RenderElement struct {
 	IsVisible     bool // Whether the element should be rendered.
 	IsInteractive bool // Whether the element responds to input (Button, Input).
 
+	IsActive              bool  // General purpose active state flag.
+	ActiveStyleNameIndex  uint8 // String table index for the NAME of the 'active' style.
+	InactiveStyleNameIndex uint8 // String table index for the NAME of the 'inactive' style.
+
 	// Attached Handlers
 	EventHandlers []EventCallbackInfo // List of standard KRB event handlers attached.
 }
