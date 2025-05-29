@@ -12,7 +12,6 @@ import (
 	// Import the specific implementation (Raylib)
 	"github.com/waozixyz/kryon/impl/go/render/raylib"
 
-	rl "github.com/gen2brain/raylib-go/raylib" // Alias for raylib functions
 )
 
 // --- Placeholder Event Handler Functions ---

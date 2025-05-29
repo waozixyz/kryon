@@ -44,18 +44,20 @@ If you are working with the `.kry` source files in the `examples` directory, thi
 These tables show the completion status of various language/renderer implementations against the examples and widgets found in the `examples/` directory.
 
 **Legend:**
-* ✅: Fully working and implemented.
+* ✅: Fully working and implemented with the latest spec.
 * 〰️: Partially working or implemented, but may have issues or missing features.
-* ❌: Not implemented or currently broken.
+* ❌: Not implemented.
+* vX.X: Worked at this version.
+* ~vX.X: Worked partially at this version.
 
 ### Examples Status
 
 | Implementation | hello_world | button | image |
 |----------------|:-----------:|:------:|:-----:|
-| C / Raylib     |     ✅      |   〰️   |  ✅   |
-| C / Term       |     ✅      |   〰️   |  ❌   |
+| C / Raylib     |     v0.3      |   ~v0.3   |  v0.3   |
+| C / Term       |     v0.2      |   ~v0.2   |  ❌   |
 | Go / Raylib    |     ✅      |   ✅   |  ✅   |
-| JS / Web       |     〰️      |   〰️   |  〰️   |
+| JS / Web       |     〰v0.3      |   〰️v0.3   |  〰️v0.3   |
 
 ### Widgets Status
 
@@ -63,7 +65,7 @@ These tables show the completion status of various language/renderer implementat
 |----------------|:-------:|
 | C / Raylib     |    ❌   |
 | C / Term       |    ❌   |
-| Go / Raylib    |    〰️   |
+| Go / Raylib    |    ✅   |
 | JS / Web       |    ❌   |
 
 ## Build and Run

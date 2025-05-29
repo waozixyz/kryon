@@ -2,217 +2,661 @@
 package raylib
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
 	"path/filepath"
-	// "strings" // Not currently needed here
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 	"github.com/waozixyz/kryon/impl/go/krb"
 	"github.com/waozixyz/kryon/impl/go/render"
 )
 
-const baseFontSize = 18.0 // Base font size for text rendering
+// baseFontSize defines the default size for text rendering.
+const baseFontSize = 18.0
 
+// componentNameConventionKey is the KRB custom property key used to identify
+// the original KRY component name for instances. This must match the key
+// used by the Kryon compiler when it generates KRB files.
+const componentNameConventionKey = "_componentName"
+
+// RaylibRenderer implements the render.Renderer interface using the Raylib graphics library.
+// It handles window initialization, KRB document processing, layout, drawing, and event polling.
 type RaylibRenderer struct {
 	config          render.WindowConfig
-	elements        []render.RenderElement
+	elements        []render.RenderElement // Slice of actual RenderElement structs, will grow
 	roots           []*render.RenderElement
 	loadedTextures  map[uint8]rl.Texture2D
 	krbFileDir      string
 	scaleFactor     float32
 	docRef          *krb.Document
-
-	// --- Instance-specific maps ---
-	eventHandlerMap map[string]func()                      // Map standard callback names to Go funcs
-	customHandlers  map[string]render.CustomComponentHandler // Map component names to Go handlers
+	eventHandlerMap map[string]func()
+	customHandlers  map[string]render.CustomComponentHandler
 }
 
-// NewRaylibRenderer creates a new Raylib renderer instance.
+// NewRaylibRenderer creates and initializes a new RaylibRenderer instance with default values.
 func NewRaylibRenderer() *RaylibRenderer {
 	return &RaylibRenderer{
 		loadedTextures:  make(map[uint8]rl.Texture2D),
 		scaleFactor:     1.0,
 		eventHandlerMap: make(map[string]func()),
-		customHandlers:  make(map[string]render.CustomComponentHandler), // Initialize map
+		customHandlers:  make(map[string]render.CustomComponentHandler),
 	}
 }
 
-// Init initializes the Raylib window based on the provided configuration.
+// Init initializes the Raylib window according to the provided configuration.
 func (r *RaylibRenderer) Init(config render.WindowConfig) error {
 	r.config = config
-	// Use scale factor from config, ensuring it's at least 1.0
 	r.scaleFactor = float32(math.Max(1.0, float64(config.ScaleFactor)))
-	log.Printf("Raylib Init: Window %dx%d Title: '%s' Scale: %.2f", config.Width, config.Height, config.Title, r.scaleFactor)
 
-	// Optional: Configure Raylib window flags before InitWindow
-	// rl.SetConfigFlags(rl.FlagMsaa4xHint | rl.FlagVsyncHint)
+	log.Printf("RaylibRenderer Init: Initializing window %dx%d. Title: '%s'. UI Scale: %.2f.",
+		config.Width, config.Height, config.Title, r.scaleFactor)
 
 	rl.InitWindow(int32(config.Width), int32(config.Height), config.Title)
 
-	// Apply resizable flag
 	if config.Resizable {
 		rl.SetWindowState(rl.FlagWindowResizable)
 	} else {
 		rl.ClearWindowState(rl.FlagWindowResizable)
-		// Ensure initial size is set correctly if not resizable
-		rl.SetWindowSize(config.Width, config.Height)
+		rl.SetWindowSize(config.Width, config.Height) // Enforce if not resizable
 	}
 
-	rl.SetTargetFPS(60) // Set a target frame rate
-	// rl.SetExitKey(0) // Optional: Disable default ESC key closing the window
+	rl.SetTargetFPS(60)
 
-	// Check if window initialized successfully (important before GPU operations)
 	if !rl.IsWindowReady() {
-		return fmt.Errorf("raylib InitWindow failed or window is not ready")
+		return fmt.Errorf("RaylibRenderer Init: rl.InitWindow failed or window is not ready")
 	}
-	log.Println("Raylib Init: Window is ready.") // Added confirmation log
+	log.Println("RaylibRenderer Init: Raylib window is ready.")
 	return nil
 }
 
-// PrepareTree processes the KRB document into a renderable tree structure.
-// It initializes RenderElement structs, applies styles and standard properties,
-// resolves text/images/events, and builds the parent-child hierarchy.
-// Custom properties are NOT interpreted here.
+// PrepareTree processes a parsed KRB document to build a tree of RenderElement objects.
 func (r *RaylibRenderer) PrepareTree(doc *krb.Document, krbFilePath string) ([]*render.RenderElement, render.WindowConfig, error) {
-	if doc == nil || doc.Header.ElementCount == 0 {
-		log.Println("PrepareTree: No elements in document.")
-		return nil, r.config, nil
+	if doc == nil {
+		log.Println("PrepareTree: KRB document is nil.")
+		return nil, r.config, fmt.Errorf("PrepareTree: KRB document is nil")
 	}
-	r.docRef = doc // Store reference for helper functions
+	r.docRef = doc
 
-	// --- Determine Base Directory for Resources ---
 	var err error
-	if krbFilePath == "." || krbFilePath == "" {
-		r.krbFileDir, err = os.Getwd()
-		if err != nil {
-			log.Printf("WARN PrepareTree: Could not get CWD: %v. Using '.'", err)
-			r.krbFileDir = "."
-		}
-	} else {
-		absDir, err := filepath.Abs(filepath.Dir(krbFilePath))
-		if err != nil {
-			log.Printf("WARN PrepareTree: Failed to get abs path for '%s': %v. Using provided dir.", krbFilePath, err)
-			r.krbFileDir = filepath.Dir(krbFilePath)
-		} else {
-			r.krbFileDir = absDir
-		}
+	r.krbFileDir, err = filepath.Abs(filepath.Dir(krbFilePath))
+	if err != nil {
+		r.krbFileDir = filepath.Dir(krbFilePath) // Fallback
+		log.Printf("WARN PrepareTree: Failed to get absolute path for KRB file dir '%s': %v. Using relative base: %s", krbFilePath, err, r.krbFileDir)
 	}
-	log.Printf("PrepareTree: Resource Base Directory: %s", r.krbFileDir)
+	log.Printf("PrepareTree: Resource Base Directory set to: %s", r.krbFileDir)
 
-	// --- Initialize Data Structures ---
-	r.elements = make([]render.RenderElement, doc.Header.ElementCount)
-	r.roots = nil // Reset roots slice
+	// Initialize window configuration with library defaults
+	windowConfig := render.DefaultWindowConfig()
+	windowConfig.DefaultBg = rl.Black // Default window clear color
 
-	// --- Set Up Defaults ---
-	windowConfig := render.DefaultWindowConfig() // Start with library defaults
-	// *** NOTE: We still determine the window's clear color here ***
-	windowConfig.DefaultBg = rl.Black // Start with black
-	// Other visual defaults that might be inherited IF NOT transparent
-	defaultFg := rl.RayWhite
-	defaultBorder := rl.Gray
+	// Default visual properties for elements
+	defaultForegroundColor := rl.RayWhite
+	defaultBorderColor := rl.Gray
 	defaultBorderWidth := uint8(0)
-	defaultTextAlign := uint8(krb.LayoutAlignStart) // Default to Start alignment
-	defaultVisible := true                          // Default visibility
+	defaultTextAlignment := uint8(krb.LayoutAlignStart)
+	defaultIsVisible := true
 
-	// --- Pass 1: Process App Element (if present) to override defaults/config ---
-	hasAppElement := (doc.Header.Flags&krb.FlagHasApp) != 0 && doc.Header.ElementCount > 0 && doc.Elements[0].Type == krb.ElemTypeApp
-	if hasAppElement {
-		appElement := &r.elements[0] // App is always the first element if present
-		appElement.Header = doc.Elements[0]
-		appElement.OriginalIndex = 0
+	// Process the App element first (if present)
+	isAppElementPresent := (doc.Header.Flags&krb.FlagHasApp) != 0 &&
+		doc.Header.ElementCount > 0 &&
+		doc.Elements[0].Type == krb.ElemTypeApp
 
-		// Apply App's style props -> ONLY affects window defaults now
-		if style, ok := findStyle(doc, appElement.Header.StyleID); ok {
-			// Pass only windowConfig.DefaultBg to be modified by style
-			applyStylePropertiesToWindowDefaults(style.Properties, doc, &windowConfig.DefaultBg)
-		} else if appElement.Header.StyleID != 0 {
-			log.Printf("Warn: App element has invalid StyleID %d", appElement.Header.StyleID)
+	if isAppElementPresent {
+		appElementKrbHeader := &doc.Elements[0]
+		if appStyle, styleFound := findStyle(doc, appElementKrbHeader.StyleID); styleFound {
+			applyStylePropertiesToWindowDefaults(appStyle.Properties, doc, &windowConfig.DefaultBg)
+		} else if appElementKrbHeader.StyleID != 0 {
+			log.Printf("Warn PrepareTree: App element has StyleID %d, but this style was not found.", appElementKrbHeader.StyleID)
 		}
 
-		// Apply App's direct KRB properties -> ONLY affects window config now
 		if len(doc.Properties) > 0 && len(doc.Properties[0]) > 0 {
 			applyDirectPropertiesToConfig(doc.Properties[0], doc, &windowConfig)
 		}
-
-		// Scale factor update remains
-		r.scaleFactor = float32(math.Max(1.0, float64(windowConfig.ScaleFactor)))
-		log.Printf("PrepareTree: Processed App. Config: %dx%d '%s' Scale:%.2f Resizable:%t", windowConfig.Width, windowConfig.Height, windowConfig.Title, r.scaleFactor, windowConfig.Resizable)
+		r.scaleFactor = float32(math.Max(1.0, float64(windowConfig.ScaleFactor))) // Update scale factor
+		log.Printf("PrepareTree: Processed App element. Final Window Config: Width=%d, Height=%d, Title='%s', Scale=%.2f, Resizable=%t",
+			windowConfig.Width, windowConfig.Height, windowConfig.Title, r.scaleFactor, windowConfig.Resizable)
 	} else {
-		log.Println("PrepareTree: No App element found, using default window config.")
+		log.Println("PrepareTree: No App element found in KRB. Using default window configuration.")
 	}
-	// Store final window config (primarily for size, title, resizable, DefaultBg)
 	r.config = windowConfig
 
-	// --- Pass 2: Initialize All RenderElements ---
-	// Apply defaults, styles, and direct standard properties to each element.
-	for i := 0; i < int(doc.Header.ElementCount); i++ {
-		currentEl := &r.elements[i]
-		currentEl.Header = doc.Elements[i]
-		currentEl.OriginalIndex = i
+	initialElementCount := int(doc.Header.ElementCount)
+	if initialElementCount == 0 {
+		log.Println("PrepareTree: No elements in KRB document. Returning empty tree.")
+		r.elements = nil
+		r.roots = nil
+		return nil, r.config, nil
+	}
 
-		// --- >>> MODIFICATION: Default Background is TRANSPARENT <<< ---
-		currentEl.BgColor = rl.Blank // Use Raylib's fully transparent color
-		// --- Default other visual properties ---
-		currentEl.FgColor = defaultFg
-		currentEl.BorderColor = defaultBorder
-		currentEl.BorderWidths = [4]uint8{defaultBorderWidth, defaultBorderWidth, defaultBorderWidth, defaultBorderWidth} // Uniform default border
-		currentEl.TextAlignment = defaultTextAlign
-		currentEl.IsVisible = defaultVisible
-		// --- END MODIFICATION ---
+	// Allocate r.elements with initial capacity, it will grow as components are expanded.
+	// Using a slice of structs directly for r.elements.
+	r.elements = make([]render.RenderElement, initialElementCount, initialElementCount*2) // Heuristic for capacity
 
-		// Set other basic properties derived from KRB header
-		currentEl.IsInteractive = (currentEl.Header.Type == krb.ElemTypeButton || currentEl.Header.Type == krb.ElemTypeInput)
-		currentEl.ResourceIndex = render.InvalidResourceIndex // Initialize resource index
+	// Pass 1: Create RenderElements for all top-level elements defined in doc.Elements
+	for i := 0; i < initialElementCount; i++ {
+		renderEl := &r.elements[i]     // Get pointer to the element in the slice
+		krbElHeader := doc.Elements[i] // Corresponding KRB element header
 
-		// Apply Style Properties (overrides defaults, including the transparent BgColor if style defines one)
-		style, styleOk := findStyle(doc, currentEl.Header.StyleID)
-		if styleOk {
-			// This function now correctly overrides the rl.Blank default if the style has a background_color
-			applyStylePropertiesToElement(style.Properties, doc, currentEl)
-		} else if currentEl.Header.StyleID != 0 && i != 0 { // Don't warn again for App if already warned
-			log.Printf("Warn: Elem %d (Type %d) has invalid StyleID %d", i, currentEl.Header.Type, currentEl.Header.StyleID)
+		renderEl.Header = krbElHeader // Copy KRB header
+		renderEl.OriginalIndex = i    // This is its index in the *original* doc.Elements
+		renderEl.DocRef = doc         // Provide access to the full document for helpers
+
+		// Set default visual properties for the element
+		renderEl.BgColor = rl.Blank // Default to a fully transparent background
+		renderEl.FgColor = defaultForegroundColor
+		renderEl.BorderColor = defaultBorderColor
+		renderEl.BorderWidths = [4]uint8{defaultBorderWidth, defaultBorderWidth, defaultBorderWidth, defaultBorderWidth}
+		renderEl.Padding = [4]uint8{0, 0, 0, 0} // Default padding to zero
+		renderEl.TextAlignment = defaultTextAlignment
+		renderEl.IsVisible = defaultIsVisible
+
+		renderEl.IsInteractive = (krbElHeader.Type == krb.ElemTypeButton || krbElHeader.Type == krb.ElemTypeInput)
+		renderEl.ResourceIndex = render.InvalidResourceIndex
+
+		// Attempt to derive a SourceElementName for debugging and identification
+		elementIDString, _ := getStringValueByIdx(doc, renderEl.Header.ID)
+		// Check for component name using the ORIGINAL custom properties from doc.CustomProperties[i]
+		var componentName string
+		if doc.CustomProperties != nil && i < len(doc.CustomProperties) {
+			// Use the RenderElement directly for getCustomPropertyValue
+			componentName, _ = getCustomPropertyValue(renderEl, componentNameConventionKey, doc)
 		}
 
-		// Apply Direct Standard Properties (overrides style and defaults)
+		if componentName != "" {
+			renderEl.SourceElementName = componentName
+		} else if elementIDString != "" {
+			renderEl.SourceElementName = elementIDString
+		} else {
+			renderEl.SourceElementName = fmt.Sprintf("Type0x%X_Idx%d", renderEl.Header.Type, renderEl.OriginalIndex)
+		}
+
+		// Apply styles to the element
+		elementStyle, styleFound := findStyle(doc, krbElHeader.StyleID)
+		if styleFound {
+			applyStylePropertiesToElement(elementStyle.Properties, doc, renderEl)
+		} else if krbElHeader.StyleID != 0 && !(i == 0 && isAppElementPresent) {
+			log.Printf("Warn PrepareTree: Element %d (Name: '%s', Type: %X) has StyleID %d, but style was not found.",
+				i, renderEl.SourceElementName, krbElHeader.Type, krbElHeader.StyleID)
+		}
+
+		// Apply direct properties from KRB
 		if len(doc.Properties) > i && len(doc.Properties[i]) > 0 {
-			// Special handling for App element's OWN background if needed
-			if i == 0 && hasAppElement {
-				// If App element itself should have a visible background (rare, usually just sets window default)
-				applyDirectVisualPropertiesToAppElement(doc.Properties[0], doc, currentEl)
-			} else if i != 0 || !hasAppElement {
-				// Overrides style/defaults (including potentially overriding BgColor back to non-transparent)
-				applyDirectPropertiesToElement(doc.Properties[i], doc, currentEl)
+			if i == 0 && isAppElementPresent {
+				applyDirectVisualPropertiesToAppElement(doc.Properties[0], doc, renderEl)
+			} else {
+				applyDirectPropertiesToElement(doc.Properties[i], doc, renderEl)
 			}
 		}
 
-		// Resolve Content and Events (using potentially overridden properties)
-		resolveElementText(doc, currentEl, style, styleOk)
-		resolveElementImageSource(doc, currentEl, style, styleOk)
-		resolveEventHandlers(doc, currentEl) // Stores callback info
+		resolveElementText(doc, renderEl, elementStyle, styleFound)
+		resolveElementImageSource(doc, renderEl, elementStyle, styleFound)
+		resolveEventHandlers(doc, renderEl) // Uses OriginalIndex to look up in doc.Events
+	}
 
-	} // End loop initializing elements
+	// Pass 2: Expand Component Instances
+	nextMasterIndex := initialElementCount // Next available index for globally unique OriginalIndex
+	for i := 0; i < initialElementCount; i++ { // Iterate only original elements for expansion
+		instanceElement := &r.elements[i] // This is the placeholder element
 
-	// --- Pass 3: Build Parent/Child Tree Hierarchy ---
-	log.Println("PrepareTree: Building element tree...")
+		var componentName string
+		// Custom properties for instanceElement were resolved from doc.CustomProperties[i]
+		componentName, _ = getCustomPropertyValue(instanceElement, componentNameConventionKey, doc)
 
-	errBuild := buildElementTree(doc, r.elements, &r.roots, doc.ElementStartOffsets)
+		if componentName != "" {
+			compDef := r.findComponentDefinition(doc, componentName)
+			if compDef != nil {
+				log.Printf("PrepareTree: Expanding component '%s' for instance '%s' (OriginalIndex: %d)", componentName, instanceElement.SourceElementName, instanceElement.OriginalIndex)
+				err := r.expandComponent(instanceElement, compDef, doc, &r.elements, &nextMasterIndex)
+				if err != nil {
+					log.Printf("ERROR PrepareTree: Failed to expand component '%s' for instance '%s': %v", componentName, instanceElement.SourceElementName, err)
+					// Decide if this is a fatal error or if we can continue
+				}
+			} else {
+				log.Printf("Warn PrepareTree: Component definition for '%s' (instance '%s') not found.", componentName, instanceElement.SourceElementName)
+			}
+		}
+	}
+	// After expansion, r.elements contains all elements (original + expanded from templates)
+
+	// Pass 3: Build the tree structure (parent-child pointers)
+	log.Println("PrepareTree: Building final element tree...")
+	r.roots = nil // Reset roots before rebuilding
+	errBuild := r.buildFullElementTree(initialElementCount)
 	if errBuild != nil {
-		log.Printf("Error: Failed to build element tree: %v", errBuild)
-		// Handle error appropriately, maybe return it from PrepareTree
-		return nil, r.config, fmt.Errorf("failed to build element tree: %w", errBuild)
+		log.Printf("Error PrepareTree: Failed to build full element tree: %v", errBuild)
+		return nil, r.config, fmt.Errorf("failed to build full element tree: %w", errBuild)
+	}
+
+	log.Printf("PrepareTree: Tree built successfully. Number of root nodes: %d. Total elements (including expanded): %d.",
+		len(r.roots), len(r.elements))
+	for rootIdx, rootNode := range r.roots {
+		logElementTree(rootNode, 0, fmt.Sprintf("Root[%d]", rootIdx))
 	}
 
 	return r.roots, r.config, nil
 }
 
-// GetRenderTree returns the flat list of all processed render elements.
-// This implements the method added to the render.Renderer interface.
+// findComponentDefinition looks up a component definition by name in the document.
+func (r *RaylibRenderer) findComponentDefinition(doc *krb.Document, name string) *krb.KrbComponentDefinition {
+	if doc == nil || len(doc.ComponentDefinitions) == 0 || len(doc.Strings) == 0 {
+		return nil
+	}
+	for i := range doc.ComponentDefinitions {
+		compDef := &doc.ComponentDefinitions[i] // Get pointer to the definition
+		if int(compDef.NameIndex) < len(doc.Strings) && doc.Strings[compDef.NameIndex] == name {
+			return compDef
+		}
+	}
+	return nil
+}
+
+// expandComponent parses a component's template data, creates RenderElements for its contents,
+// appends them to the main `allElements` slice, and links them as children to the `instanceElement`.
+func (r *RaylibRenderer) expandComponent(
+	instanceElement *render.RenderElement,
+	compDef *krb.KrbComponentDefinition,
+	doc *krb.Document,
+	allElements *[]render.RenderElement, // Pointer to the renderer's main elements slice
+	nextMasterIndex *int, // Pointer to the next available globally unique OriginalIndex
+) error {
+	if compDef.RootElementTemplateData == nil || len(compDef.RootElementTemplateData) == 0 {
+		log.Printf("Warn expandComponent: Component definition '%s' for instance '%s' has no RootElementTemplateData.", doc.Strings[compDef.NameIndex], instanceElement.SourceElementName)
+		instanceElement.Children = nil // Ensure it's an empty slice
+		return nil
+	}
+
+	templateReader := bytes.NewReader(compDef.RootElementTemplateData)
+	var templateRootsInThisExpansion []*render.RenderElement
+	templateOffsetToGlobalIndex := make(map[uint32]int) // Maps offset *within template data* to global index in allElements
+	type templateChildInfo struct {
+		parentGlobalIndex            int
+		childRefs                    []krb.ChildRef
+		parentHeaderOffsetInTemplate uint32
+	}
+	var templateChildInfos []templateChildInfo
+
+	// Default visual properties for template elements (can be overridden)
+	defaultFgColor := rl.RayWhite
+	defaultBorderColor := rl.Gray
+	defaultTextAlignment := uint8(krb.LayoutAlignStart)
+	defaultIsVisible := true
+
+	templateDataStreamOffset := uint32(0) // Tracks current read position in templateReader
+
+	for templateReader.Len() > 0 {
+		currentElementOffsetInTemplate := templateDataStreamOffset
+
+		headerBuf := make([]byte, krb.ElementHeaderSize)
+		n, err := templateReader.Read(headerBuf)
+		if err == io.EOF {
+			break
+		}
+		if err != nil || n < krb.ElementHeaderSize {
+			return fmt.Errorf("expandComponent '%s': failed to read template element header: %w (read %d bytes)", instanceElement.SourceElementName, err, n)
+		}
+		templateDataStreamOffset += uint32(n)
+
+		templateKrbHeader := krb.ElementHeader{
+			Type:            krb.ElementType(headerBuf[0]),
+			ID:              headerBuf[1],
+			PosX:            krb.ReadU16LE(headerBuf[2:4]),
+			PosY:            krb.ReadU16LE(headerBuf[4:6]),
+			Width:           krb.ReadU16LE(headerBuf[6:8]),
+			Height:          krb.ReadU16LE(headerBuf[8:10]),
+			Layout:          headerBuf[10],
+			StyleID:         headerBuf[11],
+			PropertyCount:   headerBuf[12],
+			ChildCount:      headerBuf[13],
+			EventCount:      headerBuf[14],
+			AnimationCount:  headerBuf[15],
+			CustomPropCount: headerBuf[16],
+		}
+
+		newElGlobalIndex := *nextMasterIndex
+		(*nextMasterIndex)++
+
+		// Grow allElements slice if needed
+		if newElGlobalIndex >= cap(*allElements) {
+			newCap := cap(*allElements) * 2
+			if newElGlobalIndex >= newCap { // Ensure newCap is sufficient
+				newCap = newElGlobalIndex + 10 // Add some buffer
+			}
+			tempSlice := make([]render.RenderElement, len(*allElements), newCap)
+			copy(tempSlice, *allElements)
+			*allElements = tempSlice
+		}
+		// Ensure slice has enough length for direct assignment
+		if newElGlobalIndex >= len(*allElements) {
+			*allElements = (*allElements)[:newElGlobalIndex+1]
+		}
+
+		newEl := &(*allElements)[newElGlobalIndex] // Get pointer to the element to modify
+		newEl.OriginalIndex = newElGlobalIndex     // Global unique index
+		newEl.Header = templateKrbHeader
+		newEl.DocRef = doc
+
+		// Initialize visual defaults
+		newEl.BgColor = rl.Blank
+		newEl.FgColor = defaultFgColor
+		newEl.BorderColor = defaultBorderColor
+		newEl.TextAlignment = defaultTextAlignment
+		newEl.IsVisible = defaultIsVisible
+		newEl.ResourceIndex = render.InvalidResourceIndex
+		newEl.IsInteractive = (templateKrbHeader.Type == krb.ElemTypeButton || templateKrbHeader.Type == krb.ElemTypeInput)
+
+
+		templateOffsetToGlobalIndex[currentElementOffsetInTemplate] = newElGlobalIndex
+
+		templateElIdStr, _ := getStringValueByIdx(doc, templateKrbHeader.ID)
+		if templateElIdStr != "" {
+			newEl.SourceElementName = templateElIdStr
+		} else {
+			newEl.SourceElementName = fmt.Sprintf("TplElem_Type0x%X_Idx%d", templateKrbHeader.Type, newEl.OriginalIndex)
+		}
+
+		// Parse and Apply Properties from template data
+		var templateDirectProps []krb.Property
+		if templateKrbHeader.PropertyCount > 0 {
+			templateDirectProps = make([]krb.Property, templateKrbHeader.PropertyCount)
+			propHeaderBuf := make([]byte, 3)
+			for j := uint8(0); j < templateKrbHeader.PropertyCount; j++ {
+				nProp, errProp := templateReader.Read(propHeaderBuf)
+				if errProp != nil || nProp < 3 {
+					return fmt.Errorf("expandComponent '%s': failed to read template property header for '%s': %w", instanceElement.SourceElementName, newEl.SourceElementName, errProp)
+				}
+				templateDataStreamOffset += uint32(nProp)
+				prop := &templateDirectProps[j]
+				prop.ID = krb.PropertyID(propHeaderBuf[0])
+				prop.ValueType = krb.ValueType(propHeaderBuf[1])
+				prop.Size = propHeaderBuf[2]
+				if prop.Size > 0 {
+					prop.Value = make([]byte, prop.Size)
+					nVal, errVal := templateReader.Read(prop.Value)
+					if errVal != nil || nVal < int(prop.Size) {
+						return fmt.Errorf("expandComponent '%s': failed to read template property value for '%s': %w", instanceElement.SourceElementName, newEl.SourceElementName, errVal)
+					}
+					templateDataStreamOffset += uint32(nVal)
+				}
+			}
+		}
+		templateStyle, templateStyleFound := findStyle(doc, templateKrbHeader.StyleID)
+		if templateStyleFound {
+			applyStylePropertiesToElement(templateStyle.Properties, doc, newEl)
+		}
+		applyDirectPropertiesToElement(templateDirectProps, doc, newEl) // Apply props from template
+
+		// Parse and Apply Custom Properties from template data (primarily for _componentName of nested components)
+		var templateCustomProps []krb.CustomProperty
+		if templateKrbHeader.CustomPropCount > 0 {
+			templateCustomProps = make([]krb.CustomProperty, templateKrbHeader.CustomPropCount)
+			customPropHeaderBuf := make([]byte, 3)
+			for j := uint8(0); j < templateKrbHeader.CustomPropCount; j++ {
+				nCustomProp, errCustomProp := templateReader.Read(customPropHeaderBuf)
+				if errCustomProp != nil || nCustomProp < 3 {
+					return fmt.Errorf("expandComponent '%s': failed to read template custom property header for '%s': %w", instanceElement.SourceElementName, newEl.SourceElementName, errCustomProp)
+				}
+				templateDataStreamOffset += uint32(nCustomProp)
+				cprop := &templateCustomProps[j]
+				cprop.KeyIndex = customPropHeaderBuf[0]
+				cprop.ValueType = krb.ValueType(customPropHeaderBuf[1])
+				cprop.Size = customPropHeaderBuf[2]
+				if cprop.Size > 0 {
+					cprop.Value = make([]byte, cprop.Size)
+					nVal, errVal := templateReader.Read(cprop.Value)
+					if errVal != nil || nVal < int(cprop.Size) {
+						return fmt.Errorf("expandComponent '%s': failed to read template custom property value for '%s': %w", instanceElement.SourceElementName, newEl.SourceElementName, errVal)
+					}
+					templateDataStreamOffset += uint32(nVal)
+				}
+			}
+		}
+		var nestedComponentName string
+		for _, cProp := range templateCustomProps { // Check parsed custom props from template
+			keyName, keyOk := getStringValueByIdx(doc, cProp.KeyIndex)
+			if keyOk && keyName == componentNameConventionKey {
+				if (cProp.ValueType == krb.ValTypeString || cProp.ValueType == krb.ValTypeResource) && cProp.Size == 1 {
+					valueIndex := cProp.Value[0]
+					if strVal, strOk := getStringValueByIdx(doc, valueIndex); strOk {
+						nestedComponentName = strVal
+						newEl.SourceElementName = nestedComponentName // Update if it's a nested component instance
+						break
+					}
+				}
+			}
+		}
+
+		resolveElementText(doc, newEl, templateStyle, templateStyleFound)
+		resolveElementImageSource(doc, newEl, templateStyle, templateStyleFound)
+
+		if templateKrbHeader.EventCount > 0 {
+			eventDataSize := int(templateKrbHeader.EventCount) * krb.EventFileEntrySize
+			eventBuf := make([]byte, eventDataSize)
+			nEvent, errEvent := templateReader.Read(eventBuf)
+			if errEvent != nil || nEvent < eventDataSize {
+				return fmt.Errorf("expandComponent '%s': failed to read template event block for '%s': %w", instanceElement.SourceElementName, newEl.SourceElementName, errEvent)
+			}
+			templateDataStreamOffset += uint32(nEvent)
+			newEl.EventHandlers = make([]render.EventCallbackInfo, templateKrbHeader.EventCount)
+			for k := uint8(0); k < templateKrbHeader.EventCount; k++ {
+				offset := int(k) * krb.EventFileEntrySize
+				eventType := krb.EventType(eventBuf[offset])
+				callbackID := eventBuf[offset+1]
+				if handlerName, ok := getStringValueByIdx(doc, callbackID); ok {
+					newEl.EventHandlers[k] = render.EventCallbackInfo{EventType: eventType, HandlerName: handlerName}
+				} else {
+					log.Printf("Warn expandComponent: Template element '%s' has invalid event callback string index %d.", newEl.SourceElementName, callbackID)
+				}
+			}
+		}
+
+		if templateKrbHeader.AnimationCount > 0 {
+			animRefDataSize := int(templateKrbHeader.AnimationCount) * krb.AnimationRefSize
+			bytesSkipped, errAnim := templateReader.Seek(int64(animRefDataSize), io.SeekCurrent)
+			if errAnim != nil || bytesSkipped < int64(animRefDataSize) {
+				return fmt.Errorf("expandComponent '%s': failed to seek past template animation refs for '%s': %w", instanceElement.SourceElementName, newEl.SourceElementName, errAnim)
+			}
+			templateDataStreamOffset += uint32(animRefDataSize)
+		}
+
+		// Store child references from template data for later linking
+		if templateKrbHeader.ChildCount > 0 {
+			templateChildRefs := make([]krb.ChildRef, templateKrbHeader.ChildCount)
+			childRefDataSize := int(templateKrbHeader.ChildCount) * krb.ChildRefSize
+			childRefBuf := make([]byte, childRefDataSize)
+			nChildRef, errChildRef := templateReader.Read(childRefBuf)
+			if errChildRef != nil || nChildRef < childRefDataSize {
+				return fmt.Errorf("expandComponent '%s': failed to read template child refs for '%s': %w", instanceElement.SourceElementName, newEl.SourceElementName, errChildRef)
+			}
+			templateDataStreamOffset += uint32(nChildRef)
+			for k := uint8(0); k < templateKrbHeader.ChildCount; k++ {
+				offset := int(k) * krb.ChildRefSize
+				templateChildRefs[k] = krb.ChildRef{ChildOffset: krb.ReadU16LE(childRefBuf[offset : offset+krb.ChildRefSize])}
+			}
+			templateChildInfos = append(templateChildInfos, templateChildInfo{
+				parentGlobalIndex:            newElGlobalIndex,
+				childRefs:                    templateChildRefs,
+				parentHeaderOffsetInTemplate: currentElementOffsetInTemplate,
+			})
+		}
+
+		// Consider this new element as a root of this template's expansion if it has no parent *within this template*.
+		// The first element parsed is typically the root.
+		if len(templateRootsInThisExpansion) == 0 { // Or a more robust check for parentlessness within template context
+			templateRootsInThisExpansion = append(templateRootsInThisExpansion, newEl)
+			newEl.Parent = instanceElement // Link this template root to the component instance element
+
+			// Property inheritance from instance to template root
+			// The instanceElement's ID should be used for the component as a whole.
+			// Apply instance ID to the first root of the template.
+			// Also, the SourceElementName should reflect the instance.
+			newEl.Header.ID = instanceElement.Header.ID
+			newEl.SourceElementName = instanceElement.SourceElementName // Override template's root name
+
+			if instanceElement.Header.StyleID != 0 { // Instance style can override template root's style
+				newEl.Header.StyleID = instanceElement.Header.StyleID
+				if ovrStyle, ovrStyleFound := findStyle(doc, newEl.Header.StyleID); ovrStyleFound {
+					applyStylePropertiesToElement(ovrStyle.Properties, doc, newEl) // Re-apply merged style
+				}
+			}
+		}
+		
+		// Handle Nested Components recursively
+		if nestedComponentName != "" {
+			nestedCompDef := r.findComponentDefinition(doc, nestedComponentName)
+			if nestedCompDef != nil {
+				log.Printf("expandComponent: Expanding nested component '%s' for template element '%s' (GlobalIdx: %d)", nestedComponentName, newEl.SourceElementName, newEl.OriginalIndex)
+				// newEl (the current element being processed from the parent template) acts as the instance placeholder for the nested component.
+				err := r.expandComponent(newEl, nestedCompDef, doc, allElements, nextMasterIndex)
+				if err != nil {
+					return fmt.Errorf("expandComponent '%s': failed to expand nested component '%s': %w", instanceElement.SourceElementName, nestedComponentName, err)
+				}
+			} else {
+				log.Printf("Warn expandComponent: Nested component definition '%s' for template element '%s' not found.", nestedComponentName, newEl.SourceElementName)
+			}
+		}
+	}
+
+	// Link children within the template using the recorded child_infos
+	for _, info := range templateChildInfos {
+		parentEl := &(*allElements)[info.parentGlobalIndex]
+
+		// If parentEl's children were already populated by a nested component expansion, skip.
+		if len(parentEl.Children) > 0 && parentEl.Children[0].Parent == parentEl {
+			// This checks if children are already linked. Assumes expandComponent correctly set them.
+			continue
+		}
+		
+		parentEl.Children = make([]*render.RenderElement, 0, len(info.childRefs)) // Initialize if not already
+		for _, childRef := range info.childRefs {
+			childAbsoluteOffsetInTemplate := info.parentHeaderOffsetInTemplate + uint32(childRef.ChildOffset)
+			childGlobalIndex, found := templateOffsetToGlobalIndex[childAbsoluteOffsetInTemplate]
+			if !found {
+				log.Printf("Error expandComponent '%s': Child for '%s' (GlobalIdx %d) at template offset %d (abs %d) not found in map. Parent template offset %d, child relative offset %d",
+					instanceElement.SourceElementName, parentEl.SourceElementName, parentEl.OriginalIndex, childRef.ChildOffset, childAbsoluteOffsetInTemplate, info.parentHeaderOffsetInTemplate, childRef.ChildOffset)
+				continue
+			}
+			childEl := &(*allElements)[childGlobalIndex]
+
+			if childEl.Parent != nil && childEl.Parent != parentEl { // Check if already parented differently
+                 log.Printf("Warn expandComponent: Template child '%s' (GlobalIdx %d) already has parent '%s'. Cannot set new parent '%s'.", childEl.SourceElementName, childEl.OriginalIndex, childEl.Parent.SourceElementName, parentEl.SourceElementName)
+                 continue
+            }
+			childEl.Parent = parentEl
+			parentEl.Children = append(parentEl.Children, childEl)
+		}
+	}
+
+	// Set the instanceElement's children to the roots of this expansion
+	if instanceElement != nil {
+		instanceElement.Children = make([]*render.RenderElement, 0, len(templateRootsInThisExpansion)) // Clear any previous stubs
+		for _, rootTplEl := range templateRootsInThisExpansion {
+			if rootTplEl.Parent == instanceElement { // Ensure it was parented correctly to this instance
+				instanceElement.Children = append(instanceElement.Children, rootTplEl)
+			}
+		}
+	}
+	return nil
+}
+
+// buildFullElementTree constructs the parent-child hierarchy for *all* elements in r.elements.
+func (r *RaylibRenderer) buildFullElementTree(initialElementCount int) error {
+	if len(r.elements) == 0 {
+		r.roots = nil
+		return nil
+	}
+
+	offsetToInitialElementIndex := make(map[uint32]int)
+	if r.docRef.ElementStartOffsets != nil {
+		for i := 0; i < initialElementCount && i < len(r.docRef.ElementStartOffsets); i++ {
+			offsetToInitialElementIndex[r.docRef.ElementStartOffsets[i]] = i
+		}
+	}
+
+	for i := 0; i < len(r.elements); i++ { // Iterate all elements, including expanded ones
+		currentEl := &r.elements[i]
+
+		// Only process original elements from doc.Elements for KRB ChildRef linking.
+		// Component children are linked during expandComponent.
+		if currentEl.OriginalIndex < initialElementCount && len(currentEl.Children) == 0 {
+			// This element is one of the original top-level elements from krb.Document.Elements
+			// and its children were NOT populated by component expansion (meaning it's not a component instance itself,
+			// or it's an empty component instance).
+			originalKrbHeader := &r.docRef.Elements[currentEl.OriginalIndex]
+
+			if originalKrbHeader.ChildCount > 0 {
+				if currentEl.OriginalIndex >= len(r.docRef.ChildRefs) || r.docRef.ChildRefs[currentEl.OriginalIndex] == nil {
+					log.Printf("Warn buildFullElementTree: Original Elem %s (OrigIdx %d) has KRB ChildCount %d but no ChildRefs.",
+						currentEl.SourceElementName, currentEl.OriginalIndex, originalKrbHeader.ChildCount)
+					continue
+				}
+
+				krbChildRefs := r.docRef.ChildRefs[currentEl.OriginalIndex]
+				// currentEl.Children should be pre-allocated or correctly sized
+				currentEl.Children = make([]*render.RenderElement, 0, len(krbChildRefs))
+
+
+				parentStartOffset := uint32(0)
+				if currentEl.OriginalIndex < len(r.docRef.ElementStartOffsets) {
+					parentStartOffset = r.docRef.ElementStartOffsets[currentEl.OriginalIndex]
+				} else {
+                     log.Printf("Error buildFullElementTree: Original Elem %s (OrigIdx %d) missing from ElementStartOffsets.", currentEl.SourceElementName, currentEl.OriginalIndex)
+                     continue
+                }
+
+
+				for _, childRef := range krbChildRefs {
+					childAbsoluteFileOffset := parentStartOffset + uint32(childRef.ChildOffset)
+					childIndexInInitialElements, found := offsetToInitialElementIndex[childAbsoluteFileOffset]
+
+					if !found {
+						log.Printf("Error buildFullElementTree: Original Elem %s (OrigIdx %d) ChildRef offset %d (abs %d) does not map to known initial element.",
+							currentEl.SourceElementName, currentEl.OriginalIndex, childRef.ChildOffset, childAbsoluteFileOffset)
+						continue
+					}
+					// childIndexInInitialElements is an index into r.elements (since original elements are at the start)
+					childEl := &r.elements[childIndexInInitialElements]
+					childEl.Parent = currentEl
+					currentEl.Children = append(currentEl.Children, childEl)
+				}
+			}
+		}
+	}
+
+	// Populate r.roots based on Parent == nil
+	r.roots = nil
+	for i := range r.elements {
+		if r.elements[i].Parent == nil {
+			// Check if this root element is already in r.roots to avoid duplicates
+			// (unlikely with current logic but good for robustness)
+			isAlreadyRoot := false
+			for _, existingRoot := range r.roots {
+				if existingRoot == &r.elements[i] {
+					isAlreadyRoot = true
+					break
+				}
+			}
+			if !isAlreadyRoot {
+				r.roots = append(r.roots, &r.elements[i])
+			}
+		}
+	}
+
+	if len(r.roots) == 0 && len(r.elements) > 0 {
+		log.Println("Warn buildFullElementTree: No root elements found after linking, but elements exist. This might be okay if App expands or is only element.")
+	}
+	return nil
+}
+
+// GetRenderTree returns a slice of pointers to all processed RenderElements.
 func (r *RaylibRenderer) GetRenderTree() []*render.RenderElement {
-	// Create a new slice of pointers referencing the elements stored in the renderer
+	if len(r.elements) == 0 {
+		return nil
+	}
 	pointers := make([]*render.RenderElement, len(r.elements))
 	for i := range r.elements {
 		pointers[i] = &r.elements[i]
@@ -220,497 +664,79 @@ func (r *RaylibRenderer) GetRenderTree() []*render.RenderElement {
 	return pointers
 }
 
-// RenderFrame performs layout, custom adjustments, and drawing.
+// RenderFrame orchestrates the entire rendering process for a single frame.
 func (r *RaylibRenderer) RenderFrame(roots []*render.RenderElement) {
 	windowResized := rl.IsWindowResized()
 	currentWidth := r.config.Width
 	currentHeight := r.config.Height
 
-	// --- Handle Window Resizing ---
 	if windowResized && r.config.Resizable {
-		newWidth, newHeight := int(rl.GetScreenWidth()), int(rl.GetScreenHeight())
+		newWidth := int(rl.GetScreenWidth())
+		newHeight := int(rl.GetScreenHeight())
 		if newWidth != currentWidth || newHeight != currentHeight {
-			// Update config and current dimensions if changed
-			r.config.Width, r.config.Height = newWidth, newHeight
-			currentWidth, currentHeight = newWidth, newHeight
-			log.Printf("Window resized to %dx%d", currentWidth, currentHeight)
-			// Layout will recalculate based on new dimensions
+			r.config.Width = newWidth
+			r.config.Height = newHeight
+			currentWidth = newWidth
+			currentHeight = newHeight
+			log.Printf("RenderFrame: Window resized to %dx%d. Recalculating layout.", currentWidth, currentHeight)
 		}
 	} else if !r.config.Resizable {
-		// If not resizable, ensure window size matches config (user might have forced resize)
-		screenWidth, screenHeight := int(rl.GetScreenWidth()), int(rl.GetScreenHeight())
+		screenWidth := int(rl.GetScreenWidth())
+		screenHeight := int(rl.GetScreenHeight())
 		if currentWidth != screenWidth || currentHeight != screenHeight {
 			rl.SetWindowSize(currentWidth, currentHeight)
 		}
 	}
 
-	// --- 1. Standard Layout Pass ---
-	for _, root := range roots {
-		if root != nil { // Safety check
-			PerformLayout(root, 0, 0, currentWidth, currentHeight, r.scaleFactor, r.docRef)
+	for _, root := range roots { // roots should be correctly populated by PrepareTree
+		if root != nil {
+			PerformLayout(root, 0, 0, float32(currentWidth), float32(currentHeight), r.scaleFactor, r.docRef)
 		}
 	}
 
-	// --- 2. Custom Component Layout Adjustment Pass ---
-	r.ApplyCustomComponentLayoutAdjustments(r.GetRenderTree(), r.docRef) 
-	// --- 3. Draw Pass ---
+	r.ApplyCustomComponentLayoutAdjustments(r.GetRenderTree(), r.docRef)
 
 	for _, root := range roots {
-		if root != nil { // Safety check
-			r.renderElementRecursiveWithCustomDraw(root, r.scaleFactor) // Use the instance method
+		if root != nil {
+			r.renderElementRecursiveWithCustomDraw(root, r.scaleFactor)
 		}
 	}
 }
 
-// PerformLayout calculates layout based on standard KRB rules (Layout byte, standard sizes).
-// It does NOT interpret custom properties for layout.
-func PerformLayout(el *render.RenderElement, parentContentX, parentContentY, parentContentW, parentContentH int, scale float32, doc *krb.Document) {
-	if el == nil {
-		log.Printf("DEBUG Layout: Skipping nil element.")
-		return // Safety check
-	}
-
-	// --- Element Identification ---
-	elIDStr := fmt.Sprintf("Elem %d (Type %d)", el.OriginalIndex, el.Header.Type)
-	if doc != nil && el.Header.ID != 0 && int(el.Header.ID) < len(doc.Strings) { // Check doc != nil
-		elIDStr += fmt.Sprintf(" ID:'%s'", doc.Strings[el.Header.ID])
-	}
-
-	isRoot := (el.Parent == nil)
-	scaled := func(v uint16) int { return int(math.Round(float64(v) * float64(scale))) }
-	scaledU8 := func(v uint8) int { return int(math.Round(float64(v) * float64(scale))) }
-
-	// --- 1. Determine Base Size ---
-	baseW, baseH := calculateBaseSize(el, scale, doc)
-	el.IntrinsicW = baseW
-	el.IntrinsicH = baseH
-
-	// Apply explicit size from KRB header
-	explicitW, explicitH := false, false // Define flags HERE to capture header explicitness
-	if el.Header.Width > 0 {
-		baseW = scaled(el.Header.Width)
-		explicitW = true // Set flag
-	}
-	if el.Header.Height > 0 {
-		baseH = scaled(el.Header.Height)
-		explicitH = true // Set flag
-	}
-
-	// --- 2. Determine Initial Render Size ---
-	initialW, initialH := baseW, baseH
-	isFlowElement := !el.Header.LayoutAbsolute()
-
-	if isRoot {
-		initialW, initialH = parentContentW, parentContentH
-	} else if isFlowElement {
-		// Clamp size to the available space from the parent *if* the element doesn't have an explicit size itself
-		if !explicitW && initialW > parentContentW { // Use the flag from Step 1
-			initialW = max(0, parentContentW)
-		}
-		if !explicitH && initialH > parentContentH { // Use the flag from Step 1
-			initialH = max(0, parentContentH)
-		}
-	}
-
-	el.RenderW = initialW
-	el.RenderH = initialH // Store potentially clamped size
-
-	// --- 3. Determine Initial Render Position ---
-	el.RenderX = parentContentX
-	el.RenderY = parentContentY
-
-	if isEffectivelyAbsolute(el) {
-		offsetX, offsetY := scaled(el.Header.PosX), scaled(el.Header.PosY)
-		if el.Parent != nil {
-			el.RenderX = el.Parent.RenderX + offsetX
-			el.RenderY = el.Parent.RenderY + offsetY
-		} else if !isRoot {
-			el.RenderX = offsetX
-			el.RenderY = offsetY
-		} else {
-			el.RenderX = offsetX
-			el.RenderY = offsetY
-		}
-	} 
-
-	// --- 4. Layout Children (Recursive Step) ---
-	if el.Header.ChildCount > 0 && len(el.Children) > 0 {
-		borderL := scaledU8(el.BorderWidths[3])
-		borderT := scaledU8(el.BorderWidths[0])
-		borderR := scaledU8(el.BorderWidths[1])
-		borderB := scaledU8(el.BorderWidths[2])
-		clientAbsX := el.RenderX + borderL
-		clientAbsY := el.RenderY + borderT
-
-		// Determine the available width and height FOR THE CHILDREN.
-		potentialChildW := parentContentW
-		if explicitW { // Use flag from Step 1
-			potentialChildW = baseW
-		}
-		potentialChildH := parentContentH
-		if explicitH { // Use flag from Step 1
-			potentialChildH = baseH
-		}
-
-		clientWidth := max(0, potentialChildW-borderL-borderR)
-		clientHeight := max(0, potentialChildH-borderT-borderB)
-
-		PerformLayoutChildren(el, clientAbsX, clientAbsY, clientWidth, clientHeight, scale, doc)
-	} // End Child Layout Step
-
-	// --- 5. Final Size Adjustment (Auto-Sizing) ---
-	shouldGrow := el.Header.LayoutGrow() && isFlowElement && !isRoot
-	// Check style for max/min size constraints
-	hasExplicitW_StyleCheck := hasStyleSize(doc, el, krb.PropIDMaxWidth, krb.PropIDMinWidth)
-	hasExplicitH_StyleCheck := hasStyleSize(doc, el, krb.PropIDMaxHeight, krb.PropIDMinHeight)
-
-	hasExplicitW := explicitW || hasExplicitW_StyleCheck
-	hasExplicitH := explicitH || hasExplicitH_StyleCheck
-
-	// Determine if auto-sizing should occur
-	shouldAutoSizeW := !shouldGrow && !hasExplicitW
-	shouldAutoSizeH := !shouldGrow && !hasExplicitH
-
-	if (shouldAutoSizeW || shouldAutoSizeH) && !isRoot && isFlowElement {
-		log.Printf("DEBUG Layout [%s]: Attempting Auto-Size (IsRoot:%t, IsFlow:%t | Grow:%t | ExplicitW:%t [Hdr:%t Stl:%t] | ExplicitH:%t [Hdr:%t Stl:%t] => AutoW:%t, AutoH:%t)",
-			elIDStr, isRoot, isFlowElement, shouldGrow,
-			hasExplicitW, explicitW, hasExplicitW_StyleCheck, // explicitW is flag from Step 1 header check
-			hasExplicitH, explicitH, hasExplicitH_StyleCheck, // explicitH is flag from Step 1 header check
-			shouldAutoSizeW, shouldAutoSizeH)
-
-		borderL, borderT := scaledU8(el.BorderWidths[3]), scaledU8(el.BorderWidths[0])
-		borderR, borderB := scaledU8(el.BorderWidths[1]), scaledU8(el.BorderWidths[2])
-		clientAbsX := el.RenderX + borderL
-		clientAbsY := el.RenderY + borderT
-		preAutoSizeW, preAutoSizeH := el.RenderW, el.RenderH
-
-		fitToChildren(el, clientAbsX, clientAbsY, borderL, borderT, borderR, borderB, shouldAutoSizeW, shouldAutoSizeH)
-
-		if el.RenderW != preAutoSizeW || el.RenderH != preAutoSizeH {
-			log.Printf("DEBUG Layout [%s]: Auto-Sized from %dx%d to %dx%d", elIDStr, preAutoSizeW, preAutoSizeH, el.RenderW, el.RenderH)
-		} else {
-			log.Printf("DEBUG Layout [%s]: Auto-Size did not change dimensions (%dx%d)", elIDStr, el.RenderW, el.RenderH)
-		}
-	} // End Auto-Size block
-
-	// --- 6. Ensure Minimum Size ---
-	finalW, finalH := max(1, el.RenderW), max(1, el.RenderH)
-	if finalW != el.RenderW || finalH != el.RenderH {
-		log.Printf("DEBUG Layout [%s]: Clamping to minimum size 1x1. Prev: %dx%d -> Final: %dx%d", elIDStr, el.RenderW, el.RenderH, finalW, finalH)
-	}
-	el.RenderW, el.RenderH = finalW, finalH
-
-} // End PerformLayout
-
-// PerformLayoutChildren lays out flow and absolute children.
-func PerformLayoutChildren(parent *render.RenderElement, parentClientOriginX, parentClientOriginY, availableW, availableH int, scale float32, doc *krb.Document) {
-	if parent == nil || len(parent.Children) == 0 {
-		return
-	}
-
-	parentIDStr := fmt.Sprintf("Elem %d", parent.OriginalIndex)
-	if doc != nil && parent.Header.ID != 0 && int(parent.Header.ID) < len(doc.Strings) {
-		parentIDStr += fmt.Sprintf(" ID:'%s'", doc.Strings[parent.Header.ID])
-	}
-
-	flowChildren := make([]*render.RenderElement, 0, len(parent.Children))
-	absoluteChildren := make([]*render.RenderElement, 0)
-	for _, child := range parent.Children {
-		if child == nil {
-			continue
-		}
-		if isEffectivelyAbsolute(child) {
-			absoluteChildren = append(absoluteChildren, child)
-		} else {
-			flowChildren = append(flowChildren, child)
-		}
-	}
-
-	// --- Layout Flow Children ---
-	if len(flowChildren) > 0 {
-		// Get layout settings from the parent's KRB header Layout byte
-		direction := parent.Header.LayoutDirection()
-		alignment := parent.Header.LayoutAlignment()
-		isReversed := (direction == krb.LayoutDirRowReverse || direction == krb.LayoutDirColumnReverse)
-		mainAxisIsHorizontal := (direction == krb.LayoutDirRow || direction == krb.LayoutDirRowReverse)
-
-		// Determine available space along the main and cross axes
-		mainAxisAvailableSpace := MuxInt(mainAxisIsHorizontal, availableW, availableH)
-		crossAxisSize := MuxInt(mainAxisIsHorizontal, availableH, availableW)
-
-		// --- Pass 1: Calculate Initial Sizes & Fixed Space ---
-		totalFixedSizeMainAxis := 0
-		growChildrenCount := 0
-		for _, child := range flowChildren {
-			PerformLayout(child, parentClientOriginX, parentClientOriginY, availableW, availableH, scale, doc)
-
-			if child.Header.LayoutGrow() {
-				growChildrenCount++
-			} else {
-				fixedSize := MuxInt(mainAxisIsHorizontal, child.RenderW, child.RenderH)
-				totalFixedSizeMainAxis += fixedSize
-			}
-		}
-
-		// --- Calculate & Distribute Growth Space ---
-		spaceForGrowth := max(0, mainAxisAvailableSpace-totalFixedSizeMainAxis)
-		growSizePerChild := 0
-		remainderForLastGrowChild := 0
-		// *** ADDED FLAG: Track if growth calculation applies to ALL available space ***
-		allSpaceIsGrowth := (totalFixedSizeMainAxis == 0 && growChildrenCount > 0 && spaceForGrowth > 0)
-
-		if growChildrenCount > 0 && spaceForGrowth > 0 {
-			growSizePerChild = spaceForGrowth / growChildrenCount
-			remainderForLastGrowChild = spaceForGrowth % growChildrenCount
-		}
-
-		// --- Pass 2: Finalize Sizes ---
-		totalFinalFlowSizeMainAxis := 0
-		tempGrowCount := 0
-		for _, child := range flowChildren {
-			isGrowing := child.Header.LayoutGrow()
-
-			if isGrowing {
-				growAmount := growSizePerChild
-				// Distribute remainder to the last growing child encountered
-				if tempGrowCount == growChildrenCount-1 {
-					growAmount += remainderForLastGrowChild
-				}
-				tempGrowCount++ // Increment after checking remainder condition
-
-				// --- >>> CORRECTED GROWTH APPLICATION <<< ---
-				if allSpaceIsGrowth {
-					// If ALL available space was distributed via growth, SET the size directly.
-					if mainAxisIsHorizontal {
-						child.RenderW = growAmount    // SET width
-						child.RenderH = crossAxisSize // Stretch height
-					} else {
-						child.RenderH = growAmount    // SET height
-						child.RenderW = crossAxisSize // Stretch width
-					}
-				} else {
-					// If only *some* space was for growth (mixed fixed/grow children), ADD the growth amount.
-					if mainAxisIsHorizontal {
-						child.RenderW += growAmount   // ADD width
-						child.RenderH = crossAxisSize // Stretch height
-					} else {
-						child.RenderH += growAmount   // ADD height
-						child.RenderW = crossAxisSize // Stretch width
-					}
-				}
-				// --- >>> END CORRECTION <<< ---
-
-			} else { // Not growing
-				// Clamp cross axis size if needed (stretch not applicable)
-				if mainAxisIsHorizontal {
-					if child.RenderH > crossAxisSize {
-						child.RenderH = crossAxisSize
-					}
-				} else {
-					if child.RenderW > crossAxisSize {
-						child.RenderW = crossAxisSize
-					}
-				}
-			}
-
-			// Ensure minimum dimensions AFTER applying growth/clamping
-			child.RenderW = max(1, child.RenderW)
-			child.RenderH = max(1, child.RenderH)
-			totalFinalFlowSizeMainAxis += MuxInt(mainAxisIsHorizontal, child.RenderW, child.RenderH)
-		}
-
-		// --- Calculate Alignment Offsets ---
-		startOffset, spacing := calculateAlignmentOffsets(alignment, mainAxisAvailableSpace, totalFinalFlowSizeMainAxis, len(flowChildren), isReversed)
-
-		// --- Pass 3: Position Flow Children ---
-		currentMainAxisPos := startOffset
-		indices := make([]int, len(flowChildren))
-		for i := range indices {
-			indices[i] = i
-		}
-		if isReversed {
-			ReverseSliceInt(indices)
-		}
-
-		for i, childIndex := range indices {
-			child := flowChildren[childIndex]
-			childW, childH := child.RenderW, child.RenderH
-			// Initialize childX/Y with the parent's content area origin
-			childX, childY := parentClientOriginX, parentClientOriginY
-			nextMainAxisPos := currentMainAxisPos
-
-			// Calculate the offset along the cross-axis based on alignment
-			crossOffset := calculateCrossAxisOffset(alignment, crossAxisSize, MuxInt(mainAxisIsHorizontal, childH, childW))
-
-			// Calculate FINAL ABSOLUTE Screen Coordinates by adding relative position to parent's origin
-			if mainAxisIsHorizontal {
-				// Add relative position along main axis (currentMainAxisPos) to parent's X origin
-				childX = parentClientOriginX + currentMainAxisPos
-				// Add relative position along cross axis (crossOffset) to parent's Y origin
-				childY = parentClientOriginY + crossOffset
-				// Prepare next main axis position
-				nextMainAxisPos += childW
-			} else { // Column
-				// Add relative position along main axis (currentMainAxisPos) to parent's Y origin
-				childY = parentClientOriginY + currentMainAxisPos
-				// Add relative position along cross axis (crossOffset) to parent's X origin
-				childX = parentClientOriginX + crossOffset
-				// Prepare next main axis position
-				nextMainAxisPos += childH
-			}
-
-			// Assign FINAL ABSOLUTE Screen Coordinates to the child element
-			child.RenderX, child.RenderY = childX, childY
-
-			// Advance main axis position for the next child
-			currentMainAxisPos = nextMainAxisPos
-			// Add spacing if using space-between alignment
-			if alignment == krb.LayoutAlignSpaceBetween && i < len(flowChildren)-1 {
-				currentMainAxisPos += spacing
-			}
-		} // End loop positioning children
-	} // End if len(flowChildren) > 0
-
-	// --- Layout Absolute Children ---
-	if len(absoluteChildren) > 0 {
-		for _, child := range absoluteChildren {
-			// Pass parent's top-left corner (RenderX/Y) and full available space initially.
-			// PerformLayout will use child.Header.PosX/Y relative to parent.RenderX/Y if absolute.
-			PerformLayout(child, parent.RenderX, parent.RenderY, availableW, availableH, scale, doc)
-		}
-	}
-} // End PerformLayoutChildren
-
-// renderElementRecursive draws an element and its children recursively based on final layout.
-// It determines effective colors based on IsActive state before drawing.
-
-func (r *RaylibRenderer) renderElementRecursive(el *render.RenderElement, scale float32) {
-	if el == nil || !el.IsVisible {
-		return
-	}
-
-	renderX, renderY := el.RenderX, el.RenderY
-	renderW, renderH := el.RenderW, el.RenderH
-
-	if renderW <= 0 || renderH <= 0 {
-		// Skip drawing elements with no size, but still process children
-		for _, child := range el.Children {
-			r.renderElementRecursive(child, scale) // Recursive call using the method 'r.'
-		}
-		return
-	}
-
-	scaledU8 := func(v uint8) int { return int(math.Round(float64(v) * float64(scale))) }
-
-	// --- Determine Effective Colors based on IsActive state ---
-	effectiveBgColor := el.BgColor // Start with base colors resolved during PrepareTree
-	effectiveFgColor := el.FgColor
-
-	// Apply dynamic styles if it's a Button AND has style indices set.
-	// *** REMOVED el.Parent.IsComponentInstance check ***
-	isPotentiallyDynamicButton := (el.Header.Type == krb.ElemTypeButton)
-
-	if isPotentiallyDynamicButton && (el.ActiveStyleNameIndex != 0 || el.InactiveStyleNameIndex != 0) {
-		targetStyleNameIndex := el.InactiveStyleNameIndex
-		if el.IsActive {
-			targetStyleNameIndex = el.ActiveStyleNameIndex
-		}
-
-		// *** Access doc through r.docRef ***
-		if r.docRef != nil && targetStyleNameIndex != 0 {
-			// Pass r.docRef to helpers
-			targetStyleID := findStyleIDByNameIndex(r.docRef, targetStyleNameIndex) // Assumes helper exists
-			if targetStyleID != 0 {
-				// Pass r.docRef to helpers
-				bg, fg, ok := getStyleColors(r.docRef, targetStyleID, r.docRef.Header.Flags) // Assumes helper exists
-				if ok {
-					effectiveBgColor = bg
-					effectiveFgColor = fg
-				} else {
-					log.Printf("WARN renderElementRecursive: Could not retrieve colors for Elem %d, StyleID %d (NameIdx %d)", el.OriginalIndex, targetStyleID, targetStyleNameIndex)
-				}
-			} else {
-				log.Printf("WARN renderElementRecursive: Could not find StyleID for Elem %d, Style Name Index %d", el.OriginalIndex, targetStyleNameIndex)
-			}
-		} else if r.docRef == nil {
-			log.Printf("WARN renderElementRecursive: r.docRef is nil, cannot lookup dynamic styles for Elem %d", el.OriginalIndex)
-		}
-	}
-	// --- End Determining Effective Colors ---
-
-	borderColor := el.BorderColor
-	topBW := scaledU8(el.BorderWidths[0])
-	rightBW := scaledU8(el.BorderWidths[1])
-	bottomBW := scaledU8(el.BorderWidths[2])
-	leftBW := scaledU8(el.BorderWidths[3])
-	// Assumes clampOpposingBorders exists
-	topBW, bottomBW = clampOpposingBorders(topBW, bottomBW, renderH)
-	leftBW, rightBW = clampOpposingBorders(leftBW, rightBW, renderW)
-
-	// --- Draw Background using EFFECTIVE color ---
-	shouldDrawBackground := el.Header.Type != krb.ElemTypeText && effectiveBgColor.A > 0
-	if shouldDrawBackground {
-		rl.DrawRectangle(int32(renderX), int32(renderY), int32(renderW), int32(renderH), effectiveBgColor)
-	}
-
-	// --- Draw Borders ---
-	drawBorders(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW, borderColor) // Assumes drawBorders exists
-
-	// --- Calculate Content Area ---
-	// Assumes calculateContentArea exists
-	contentX, contentY, contentWidth, contentHeight := calculateContentArea(renderX, renderY, renderW, renderH, topBW, rightBW, bottomBW, leftBW)
-
-	// --- Draw Content using EFFECTIVE foreground color ---
-	if contentWidth > 0 && contentHeight > 0 {
-		rl.BeginScissorMode(int32(contentX), int32(contentY), int32(contentWidth), int32(contentHeight))
-		// Pass r because drawContent is now also a method
-		r.drawContent(el, contentX, contentY, contentWidth, contentHeight, scale, effectiveFgColor)
-		rl.EndScissorMode()
-	}
-
-	// --- Recursively Draw Children ---
-	for _, child := range el.Children {
-		r.renderElementRecursive(child, scale) // Call the method recursively
-	}
-}
-
-// Cleanup unloads resources and closes the Raylib window.
+// Cleanup unloads all loaded textures and closes the Raylib window.
 func (r *RaylibRenderer) Cleanup() {
-	log.Println("Raylib Cleanup: Unloading textures...")
+	log.Println("RaylibRenderer Cleanup: Unloading textures...")
 	unloadedCount := 0
-	for resIndex, texture := range r.loadedTextures {
-		// Check if texture ID is valid before unloading
+	for resourceIdx, texture := range r.loadedTextures {
 		if texture.ID > 0 {
 			rl.UnloadTexture(texture)
 			unloadedCount++
 		}
-		delete(r.loadedTextures, resIndex)
+		delete(r.loadedTextures, resourceIdx)
 	}
-	log.Printf("Raylib Cleanup: Unloaded %d textures from cache.", unloadedCount)
-	r.loadedTextures = make(map[uint8]rl.Texture2D)
+	log.Printf("RaylibRenderer Cleanup: Unloaded %d textures from cache.", unloadedCount)
+	r.loadedTextures = make(map[uint8]rl.Texture2D) // Clear the map
 
 	if rl.IsWindowReady() {
-		log.Println("Raylib Cleanup: Closing window...")
+		log.Println("RaylibRenderer Cleanup: Closing Raylib window...")
 		rl.CloseWindow()
 	} else {
-		log.Println("Raylib Cleanup: Window was already closed or not ready.")
+		log.Println("RaylibRenderer Cleanup: Raylib window was already closed or not initialized.")
 	}
 }
 
-// ShouldClose checks if the window close button or ESC key (if enabled) was pressed.
+// ShouldClose returns true if the Raylib window has been signaled to close.
 func (r *RaylibRenderer) ShouldClose() bool {
-	// Check IsWindowReady first to avoid potential issues if called after Cleanup
 	return rl.IsWindowReady() && rl.WindowShouldClose()
 }
 
-// BeginFrame prepares Raylib for drawing.
+// BeginFrame prepares Raylib for a new frame of drawing.
 func (r *RaylibRenderer) BeginFrame() {
 	rl.BeginDrawing()
-	// Clear background using the default color (potentially set by App element)
 	rl.ClearBackground(r.config.DefaultBg)
 }
 
-// EndFrame finishes the Raylib drawing sequence for the current frame.
+// EndFrame finalizes the drawing for the current frame.
 func (r *RaylibRenderer) EndFrame() {
 	rl.EndDrawing()
 }
@@ -718,173 +744,525 @@ func (r *RaylibRenderer) EndFrame() {
 // PollEvents handles window events and user input.
 func (r *RaylibRenderer) PollEvents() {
 	if !rl.IsWindowReady() {
-		return // Don't process if window isn't ready
+		return
 	}
 
-	// Get current input state
 	mousePos := rl.GetMousePosition()
-	cursor := rl.MouseCursorDefault
-	mouseClicked := rl.IsMouseButtonPressed(rl.MouseButtonLeft)
+	currentMouseCursor := rl.MouseCursorDefault
+	isMouseButtonClicked := rl.IsMouseButtonPressed(rl.MouseButtonLeft)
+	clickHandledThisFrame := false
 
-	// Track if a click has been handled to prevent multiple triggers
-	clickedElementFound := false
-
-	// Iterate elements top-down (visually)
-	for i := len(r.elements) - 1; i >= 0; i-- {
+	for i := len(r.elements) - 1; i >= 0; i-- { // Iterate all elements, including expanded
 		el := &r.elements[i]
 
-		// Skip non-visible, non-interactive, or zero-size elements
-		if el == nil || !el.IsVisible || !el.IsInteractive || el.RenderW <= 0 || el.RenderH <= 0 {
+		if !el.IsVisible || !el.IsInteractive || el.RenderW <= 0 || el.RenderH <= 0 {
 			continue
 		}
 
-		// Check for mouse hover
-		bounds := rl.NewRectangle(float32(el.RenderX), float32(el.RenderY), float32(el.RenderW), float32(el.RenderH))
-		isHovering := rl.CheckCollisionPointRec(mousePos, bounds)
+		elementBounds := rl.NewRectangle(el.RenderX, el.RenderY, el.RenderW, el.RenderH)
+		isMouseHovering := rl.CheckCollisionPointRec(mousePos, elementBounds)
 
-		if isHovering {
-			cursor = rl.MouseCursorPointingHand // Change cursor if hovering interactive element
+		if isMouseHovering {
+			currentMouseCursor = rl.MouseCursorPointingHand
 		}
 
-		// --- Primary Event Check: Mouse Click ---
-		if isHovering && mouseClicked && !clickedElementFound {
-			eventHandledByCustom := false
+		if isMouseHovering && isMouseButtonClicked && !clickHandledThisFrame {
+			eventWasProcessedByCustomHandler := false
+			componentID, isCustomInstance := getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
 
-			// 1. Check for Custom Component Handler first
-			componentIdentifier, foundName := getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
-			if foundName && componentIdentifier != "" {
-				if handler, foundHandler := r.customHandlers[componentIdentifier]; foundHandler {
-					// Attempt to call HandleEvent if the handler implements it
-					if eventer, ok := handler.(interface {
+			if isCustomInstance && componentID != "" {
+				if customHandler, handlerExists := r.customHandlers[componentID]; handlerExists {
+					if eventInterface, implementsEvent := customHandler.(interface {
 						HandleEvent(el *render.RenderElement, eventType krb.EventType) (bool, error)
-					}); ok {
-						handled, err := eventer.HandleEvent(el, krb.EventTypeClick) // Pass Click event type
+					}); implementsEvent {
+						handled, err := eventInterface.HandleEvent(el, krb.EventTypeClick)
 						if err != nil {
-							log.Printf("ERROR: Custom click handler '%s' [Elem %d] error: %v", componentIdentifier, el.OriginalIndex, err)
+							log.Printf("ERROR PollEvents: Custom click handler for '%s' [%s] returned error: %v",
+								componentID, el.SourceElementName, err)
 						}
 						if handled {
-							eventHandledByCustom = true
-							clickedElementFound = true // Mark click as handled
+							eventWasProcessedByCustomHandler = true
+							clickHandledThisFrame = true
 						}
 					}
 				}
 			}
 
-			// 2. Check for Standard KRB Event Handlers (if not handled by custom)
-			if !eventHandledByCustom && len(el.EventHandlers) > 0 {
+			if !eventWasProcessedByCustomHandler && len(el.EventHandlers) > 0 {
 				for _, eventInfo := range el.EventHandlers {
 					if eventInfo.EventType == krb.EventTypeClick {
-						// Look up and execute the registered Go function
-						handlerFunc, found := r.eventHandlerMap[eventInfo.HandlerName]
+						goHandlerFunc, found := r.eventHandlerMap[eventInfo.HandlerName]
 						if found {
-							handlerFunc()
-							clickedElementFound = true // Mark click as handled
+							goHandlerFunc()
+							clickHandledThisFrame = true
 						} else {
-							log.Printf("Warn: Standard click handler named '%s' (for Elem %d) not registered.", eventInfo.HandlerName, el.OriginalIndex)
+							log.Printf("Warn PollEvents: Standard KRB click handler named '%s' (for %s) is not registered.",
+								eventInfo.HandlerName, el.SourceElementName)
 						}
-						goto StopProcessingElementEvents // Click handled, move to next element
+						goto ElementEventProcessingDone
 					}
-					// Add checks for other standard event types here if needed
 				}
 			}
-		} // End Mouse Click Check
-
-		StopProcessingElementEvents:
-
-		// Optimization: If hovering, stop checking elements below
-		if isHovering {
-			break
 		}
-
-	} // End loop through elements
-
-	rl.SetMouseCursor(cursor) // Set final cursor style
+	ElementEventProcessingDone:
+		if isMouseHovering {
+			break // Top-most interactive element handles hover cursor
+		}
+	}
+	rl.SetMouseCursor(currentMouseCursor)
 }
 
-// --- Helper Functions ---
-
-// buildElementTree links elements based on KRB child references.
-func buildElementTree(doc *krb.Document, elements []render.RenderElement, roots *[]*render.RenderElement, elementStartOffsets []uint32) error {
-	if len(elements) != len(elementStartOffsets) {
-		return fmt.Errorf("buildElementTree: mismatch element count (%d) vs start offsets (%d)", len(elements), len(elementStartOffsets))
+// RegisterEventHandler registers a Go function for a KRB event name.
+func (r *RaylibRenderer) RegisterEventHandler(name string, handler func()) {
+	if name == "" {
+		log.Println("WARN RegisterEventHandler: Attempted to register handler with empty name.")
+		return
 	}
-
-	// Phase 1: Reset links and build offset lookup map
-	offsetToIndex := make(map[uint32]int, len(elements))
-	for i := range elements {
-		elements[i].Parent = nil
-		elements[i].Children = nil
-		if i < len(elementStartOffsets) {
-			offsetToIndex[elementStartOffsets[i]] = i
-		} else {
-			log.Printf("Error: buildElementTree: Index %d out of bounds for offsets (len %d)", i, len(elementStartOffsets))
-		}
+	if handler == nil {
+		log.Printf("WARN RegisterEventHandler: Attempted to register nil handler for name '%s'.", name)
+		return
 	}
-	log.Printf("Debug buildElementTree: Built offset map with %d entries.", len(offsetToIndex))
-
-	// Phase 2: Link elements based on ChildRef offsets
-	linkErrors := 0
-	for parentIndex := 0; parentIndex < len(elements); parentIndex++ {
-		parentEl := &elements[parentIndex]
-		parentOffset := elementStartOffsets[parentIndex]
-		if doc.ChildRefs != nil && parentIndex < len(doc.ChildRefs) && doc.ChildRefs[parentIndex] != nil {
-			for _, childRef := range doc.ChildRefs[parentIndex] {
-				childHeaderOffset := parentOffset + uint32(childRef.ChildOffset)
-				childIndex, found := offsetToIndex[childHeaderOffset]
-
-				// Validation
-				if !found { log.Printf("Error: buildElementTree: Parent Elem %d (Off %d) refs child at %d, not found. Skipping.", parentIndex, parentOffset, childHeaderOffset); linkErrors++; continue }
-				if childIndex == parentIndex { log.Printf("Error: buildElementTree: Parent Elem %d refs self. Skipping.", parentIndex); linkErrors++; continue }
-				if childIndex < 0 || childIndex >= len(elements) { log.Printf("Error: buildElementTree: Invalid child index %d for parent %d. Skipping.", childIndex, parentIndex); linkErrors++; continue }
-
-				// Perform Linking
-				childEl := &elements[childIndex]
-				if childEl.Parent != nil { log.Printf("Warn: buildElementTree: Child Elem %d already has Parent Elem %d. Overwriting with Parent Elem %d.", childIndex, childEl.Parent.OriginalIndex, parentIndex) }
-				childEl.Parent = parentEl
-				parentEl.Children = append(parentEl.Children, childEl)
-			}
-		}
+	if _, exists := r.eventHandlerMap[name]; exists {
+		log.Printf("INFO RegisterEventHandler: Overwriting existing handler for event name '%s'", name)
 	}
-	if linkErrors > 0 { log.Printf("Warn: buildElementTree: Encountered %d linking errors.", linkErrors) }
+	r.eventHandlerMap[name] = handler
+	log.Printf("Registered event handler for '%s'", name)
+}
 
-	// Phase 3: Identify root elements
-	*roots = (*roots)[:0] // Clear efficiently
-	foundRoots := 0
-	for i := range elements {
-		if elements[i].Parent == nil {
-			*roots = append(*roots, &elements[i])
-			foundRoots++
-		}
+// RegisterCustomComponent registers a Go CustomComponentHandler for a specific component identifier.
+func (r *RaylibRenderer) RegisterCustomComponent(identifier string, handler render.CustomComponentHandler) error {
+	if identifier == "" {
+		return fmt.Errorf("RegisterCustomComponent: identifier cannot be empty")
 	}
-	log.Printf("Debug buildElementTree: Linking complete. Found %d root elements.", foundRoots)
-	if len(elements) > 0 && foundRoots == 0 { log.Printf("Error: buildElementTree: No root elements identified. Potential cycle.") }
-
+	if handler == nil {
+		return fmt.Errorf("RegisterCustomComponent: handler cannot be nil for identifier '%s'", identifier)
+	}
+	if _, exists := r.customHandlers[identifier]; exists {
+		log.Printf("INFO RegisterCustomComponent: Overwriting existing custom component handler for identifier '%s'", identifier)
+	}
+	r.customHandlers[identifier] = handler
+	log.Printf("Registered custom component handler for '%s'", identifier)
 	return nil
 }
 
-// applyStylePropertiesToWindowDefaults applies BG color from style to window defaults.
+// LoadAllTextures explicitly triggers the loading of all textures required by the UI elements.
+func (r *RaylibRenderer) LoadAllTextures() error {
+	if r.docRef == nil {
+		return fmt.Errorf("cannot load textures, KRB document reference is nil")
+	}
+	if !rl.IsWindowReady() {
+		return fmt.Errorf("cannot load textures, Raylib window is not ready")
+	}
+	log.Println("LoadAllTextures: Starting...")
+	errCount := 0
+	r.performTextureLoading(r.docRef, &errCount) // Iterates current r.elements
+	log.Printf("LoadAllTextures: Complete. Encountered %d errors.", errCount)
+	if errCount > 0 {
+		return fmt.Errorf("encountered %d errors during texture loading", errCount)
+	}
+	return nil
+}
+
+// logElementTree recursively logs the structure of the render element tree.
+func logElementTree(el *render.RenderElement, depth int, prefix string) {
+	if el == nil {
+		return
+	}
+	indentBuffer := make([]byte, depth*2)
+	for i := 0; i < depth*2; i++ {
+		indentBuffer[i] = ' '
+	}
+	indent := string(indentBuffer)
+
+	parentId := -1
+	if el.Parent != nil {
+		parentId = el.Parent.OriginalIndex // Parent's global index in r.elements
+	}
+
+	log.Printf("%s%s ElemDX_Global[%d] Name='%s' Type=0x%02X Children:%d ParentDX_Global:%d RenderRect=(%.1f,%.1f %.1fwX%.1fh) Visible:%t StyleID:%d LayoutByte:0x%02X",
+		indent, prefix, el.OriginalIndex, el.SourceElementName, el.Header.Type, len(el.Children), parentId,
+		el.RenderX, el.RenderY, el.RenderW, el.RenderH, el.IsVisible, el.Header.StyleID, el.Header.Layout)
+
+	for i, child := range el.Children {
+		logElementTree(child, depth+1, fmt.Sprintf("Child[%d]", i))
+	}
+}
+
+// ApplyCustomComponentLayoutAdjustments iterates elements and calls their layout adjustment handlers.
+func (r *RaylibRenderer) ApplyCustomComponentLayoutAdjustments(elements []*render.RenderElement, doc *krb.Document) {
+	if doc == nil || len(r.customHandlers) == 0 {
+		return
+	}
+	for _, el := range elements { // elements is from GetRenderTree(), which is all current elements
+		if el == nil {
+			continue
+		}
+		componentIdentifier, found := getCustomPropertyValue(el, componentNameConventionKey, doc)
+		if found && componentIdentifier != "" {
+			handler, handlerFound := r.customHandlers[componentIdentifier]
+			if handlerFound {
+				err := handler.HandleLayoutAdjustment(el, doc)
+				if err != nil {
+					log.Printf("ERROR ApplyCustomComponentLayoutAdjustments: Custom layout handler for '%s' [%s] failed: %v",
+						componentIdentifier, el.SourceElementName, err)
+				}
+			}
+		}
+	}
+}
+
+// renderElementRecursiveWithCustomDraw decides if custom drawing should occur or standard.
+func (r *RaylibRenderer) renderElementRecursiveWithCustomDraw(el *render.RenderElement, scale float32) {
+	if el == nil || !el.IsVisible {
+		return
+	}
+
+	skipStandardDraw := false
+	var drawErr error
+	componentIdentifier := ""
+	foundName := false
+
+	if r.docRef != nil {
+		componentIdentifier, foundName = getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
+	}
+
+	if foundName && componentIdentifier != "" {
+		if handler, foundHandler := r.customHandlers[componentIdentifier]; foundHandler {
+			if drawer, ok := handler.(interface {
+				Draw(el *render.RenderElement, scale float32, rendererInstance render.Renderer) (bool, error)
+			}); ok {
+				skipStandardDraw, drawErr = drawer.Draw(el, scale, r)
+				if drawErr != nil {
+					log.Printf("ERROR renderElementRecursiveWithCustomDraw: Custom Draw handler for component '%s' [%s] failed: %v",
+						componentIdentifier, el.SourceElementName, drawErr)
+				}
+			}
+		}
+	}
+
+	if !skipStandardDraw {
+		r.renderElementRecursive(el, scale) // This will also draw its children
+	} else {
+		// If standard draw is skipped, the custom Draw method is responsible for drawing children if needed.
+		// However, if the custom Draw only handles the parent and wants standard child drawing,
+		// we need to explicitly draw them. This logic depends on the contract of Draw.
+		// For now, assume if skipStandardDraw is true, the custom handler has drawn everything necessary
+		// for this element and its subtree. If it wants standard children, it should call this function for its children.
+		// A simpler model: if skipStandardDraw, then we manually recurse for children here.
+		// This means the custom Draw is only for the element itself, not its children's standard rendering.
+		for _, child := range el.Children {
+			r.renderElementRecursiveWithCustomDraw(child, scale)
+		}
+	}
+}
+
+// renderElementRecursive draws an element and its children.
+func (r *RaylibRenderer) renderElementRecursive(el *render.RenderElement, scale float32) {
+	if el == nil || !el.IsVisible {
+		return
+	}
+
+	renderXf, renderYf, renderWf, renderHf := el.RenderX, el.RenderY, el.RenderW, el.RenderH
+
+	// If element has no size, still process children as they might be absolutely positioned.
+	if renderWf <= 0 || renderHf <= 0 {
+		for _, child := range el.Children {
+			r.renderElementRecursive(child, scale) // Recurse for children
+		}
+		return
+	}
+
+	renderX, renderY := int32(renderXf), int32(renderYf)
+	renderW, renderH := int32(renderWf), int32(renderHf)
+
+	effectiveBgColor := el.BgColor
+	effectiveFgColor := el.FgColor
+	borderColor := el.BorderColor
+
+	// Apply active/inactive styles if applicable
+	if (el.Header.Type == krb.ElemTypeButton) && (el.ActiveStyleNameIndex != 0 || el.InactiveStyleNameIndex != 0) {
+		targetStyleNameIndex := el.InactiveStyleNameIndex
+		if el.IsActive {
+			targetStyleNameIndex = el.ActiveStyleNameIndex
+		}
+		if r.docRef != nil && targetStyleNameIndex != 0 {
+			targetStyleID := findStyleIDByNameIndex(r.docRef, targetStyleNameIndex)
+			if targetStyleID != 0 {
+				bg, fg, styleColorOk := getStyleColors(r.docRef, targetStyleID, r.docRef.Header.Flags)
+				if styleColorOk {
+					effectiveBgColor = bg
+					effectiveFgColor = fg
+				}
+			}
+		}
+	}
+
+	// Draw Background
+	if el.Header.Type != krb.ElemTypeText && effectiveBgColor.A > 0 {
+		rl.DrawRectangle(renderX, renderY, renderW, renderH, effectiveBgColor)
+	}
+
+	// Draw Borders
+	topBorder := scaledI32(el.BorderWidths[0], scale)
+	rightBorder := scaledI32(el.BorderWidths[1], scale)
+	bottomBorder := scaledI32(el.BorderWidths[2], scale)
+	leftBorder := scaledI32(el.BorderWidths[3], scale)
+
+	clampedTop, clampedBottom := clampOpposingBorders(int(topBorder), int(bottomBorder), int(renderH))
+	clampedLeft, clampedRight := clampOpposingBorders(int(leftBorder), int(rightBorder), int(renderW))
+	drawBorders(int(renderX), int(renderY), int(renderW), int(renderH),
+		clampedTop, clampedRight, clampedBottom, clampedLeft, borderColor)
+
+	// Calculate Content Area
+	paddingTop := scaledI32(el.Padding[0], scale)
+	paddingRight := scaledI32(el.Padding[1], scale)
+	paddingBottom := scaledI32(el.Padding[2], scale)
+	paddingLeft := scaledI32(el.Padding[3], scale)
+
+	contentX_f32 := renderXf + float32(clampedLeft) + float32(paddingLeft)
+	contentY_f32 := renderYf + float32(clampedTop) + float32(paddingTop)
+	contentWidth_f32 := renderWf - float32(clampedLeft) - float32(clampedRight) - float32(paddingLeft) - float32(paddingRight)
+	contentHeight_f32 := renderHf - float32(clampedTop) - float32(clampedBottom) - float32(paddingTop) - float32(paddingBottom)
+
+	contentX := int32(contentX_f32)
+	contentY := int32(contentY_f32)
+	contentWidth := maxI32(0, int32(contentWidth_f32))
+	contentHeight := maxI32(0, int32(contentHeight_f32))
+
+	// Draw Element Content (Text or Image)
+	if contentWidth > 0 && contentHeight > 0 {
+		rl.BeginScissorMode(contentX, contentY, contentWidth, contentHeight)
+		r.drawContent(el, int(contentX), int(contentY), int(contentWidth), int(contentHeight), scale, effectiveFgColor)
+		rl.EndScissorMode()
+	}
+
+	// Recursively Draw Children
+	for _, child := range el.Children {
+		r.renderElementRecursive(child, scale) // Standard recursion for children
+	}
+}
+
+// performTextureLoading loads textures for elements that require them.
+func (r *RaylibRenderer) performTextureLoading(doc *krb.Document, errorCounter *int) {
+	if doc == nil {
+		*errorCounter++
+		return
+	}
+	if r.elements == nil { // Check if r.elements slice itself is nil
+		*errorCounter++
+		return
+	}
+	for i := range r.elements { // Iterate over the potentially expanded slice
+		el := &r.elements[i]    // Get pointer to the element
+		needsTexture := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton) &&
+			el.ResourceIndex != render.InvalidResourceIndex
+		if !needsTexture {
+			continue
+		}
+		resIndex := el.ResourceIndex
+		if int(resIndex) >= len(doc.Resources) {
+			log.Printf("Error performTextureLoading: Elem %s (GlobalIdx %d) ResourceIndex %d out of bounds for doc.Resources (len %d)",
+				el.SourceElementName, el.OriginalIndex, resIndex, len(doc.Resources))
+			*errorCounter++
+			el.TextureLoaded = false
+			continue
+		}
+		res := doc.Resources[resIndex]
+		if loadedTex, exists := r.loadedTextures[resIndex]; exists {
+			el.Texture = loadedTex
+			el.TextureLoaded = (loadedTex.ID > 0)
+			if !el.TextureLoaded {
+				*errorCounter++ // Texture was in cache but invalid
+			}
+			continue
+		}
+		var texture rl.Texture2D
+		loadedOk := false
+		if res.Format == krb.ResFormatExternal {
+			if resourceName, ok := getStringValueByIdx(doc, res.NameIndex); ok {
+				fullPath := filepath.Join(r.krbFileDir, resourceName)
+				if _, statErr := os.Stat(fullPath); !os.IsNotExist(statErr) {
+					img := rl.LoadImage(fullPath)
+					if img.Data != nil && img.Width > 0 && img.Height > 0 {
+						if rl.IsWindowReady() {
+							texture = rl.LoadTextureFromImage(img)
+							if texture.ID > 0 {
+								loadedOk = true
+							} else {
+								log.Printf("Error performTextureLoading: Failed to load texture from image for %s", fullPath)
+								*errorCounter++
+							}
+						} else {
+							log.Printf("Error performTextureLoading: Window not ready for texture loading for %s", fullPath)
+							*errorCounter++
+						}
+						rl.UnloadImage(img)
+					} else {
+						log.Printf("Error performTextureLoading: Failed to load image data for external resource: %s", fullPath)
+						*errorCounter++
+					}
+				} else {
+					log.Printf("Error performTextureLoading: External resource file not found: %s", fullPath)
+					*errorCounter++
+				}
+			} else {
+				log.Printf("Error performTextureLoading: Could not get resource name for external resource index: %d", res.NameIndex)
+				*errorCounter++
+			}
+		} else if res.Format == krb.ResFormatInline {
+			if res.InlineData != nil && res.InlineDataSize > 0 {
+				ext := ".png" // Default, should ideally be hinted by KRB or config
+				img := rl.LoadImageFromMemory(ext, res.InlineData, int32(len(res.InlineData))) // Use actual length
+				if img.Data != nil && img.Width > 0 && img.Height > 0 {
+					if rl.IsWindowReady() {
+						texture = rl.LoadTextureFromImage(img)
+						if texture.ID > 0 {
+							loadedOk = true
+						} else {
+							log.Printf("Error performTextureLoading: Failed to load texture from inline image data (name index %d)", res.NameIndex)
+							*errorCounter++
+						}
+					} else {
+						log.Printf("Error performTextureLoading: Window not ready for texture loading for inline image (name index %d)", res.NameIndex)
+						*errorCounter++
+					}
+					rl.UnloadImage(img)
+				} else {
+					log.Printf("Error performTextureLoading: Failed to load image data for inline resource (name index: %d)", res.NameIndex)
+					*errorCounter++
+				}
+			} else {
+				log.Printf("Error performTextureLoading: Inline resource data is nil or size 0 (name index: %d)", res.NameIndex)
+				*errorCounter++
+			}
+		} else {
+			log.Printf("Error performTextureLoading: Unknown resource format for resource (name index: %d)", res.NameIndex)
+			*errorCounter++
+		}
+
+		if loadedOk {
+			el.Texture = texture
+			el.TextureLoaded = true
+			r.loadedTextures[resIndex] = texture
+		} else {
+			el.TextureLoaded = false
+			// Do not add invalid texture to loadedTextures map
+		}
+	}
+}
+
+// drawContent draws the specific content (text, image) of an element.
+func (r *RaylibRenderer) drawContent(el *render.RenderElement, cx, cy, cw, ch int, scale float32, effectiveFgColor rl.Color) {
+	// Draw Text
+	if (el.Header.Type == krb.ElemTypeText || el.Header.Type == krb.ElemTypeButton) && el.Text != "" {
+		fontSize := int32(math.Max(1.0, math.Round(baseFontSize*float64(scale))))
+		textWidthMeasured := rl.MeasureText(el.Text, fontSize)
+		textHeightMeasured := fontSize // For single line text
+
+		textDrawX := int32(cx)
+		textDrawY := int32(cy + (ch-int(textHeightMeasured))/2) // Center vertically by default
+
+		switch el.TextAlignment {
+		case krb.LayoutAlignCenter: // Horizontal center
+			textDrawX = int32(cx + (cw-int(textWidthMeasured))/2)
+		case krb.LayoutAlignEnd: // Horizontal end (right)
+			textDrawX = int32(cx + cw - int(textWidthMeasured))
+			// case krb.LayoutAlignStart: // Default, textDrawX is already cx
+		}
+		rl.DrawText(el.Text, textDrawX, textDrawY, fontSize, effectiveFgColor)
+	}
+
+	// Draw Image
+	isImageElement := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton)
+	if isImageElement && el.TextureLoaded && el.Texture.ID > 0 {
+		texWidth := float32(el.Texture.Width)
+		texHeight := float32(el.Texture.Height)
+
+		sourceRec := rl.NewRectangle(0, 0, texWidth, texHeight)
+		// Destination rectangle is the content area passed in (cx, cy, cw, ch)
+		destRec := rl.NewRectangle(float32(cx), float32(cy), float32(cw), float32(ch))
+
+		// Ensure valid dimensions for drawing
+		if destRec.Width > 0 && destRec.Height > 0 && sourceRec.Width > 0 && sourceRec.Height > 0 {
+			// DrawTexturePro allows scaling and fitting the texture into destRec
+			rl.DrawTexturePro(el.Texture, sourceRec, destRec, rl.NewVector2(0, 0), 0.0, rl.White) // Tint white (no change)
+		}
+	}
+}
+
+// --- Property and Style Parsing Helpers ---
 func applyStylePropertiesToWindowDefaults(props []krb.Property, doc *krb.Document, defaultBg *rl.Color) {
-	if doc == nil || defaultBg == nil { return } // Safety check
-	// Only apply properties relevant to window defaults (e.g., background color).
+	if doc == nil || defaultBg == nil {
+		return
+	}
 	for _, prop := range props {
-		// *** Use prop.ID ***
 		if prop.ID == krb.PropIDBgColor {
 			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
 				*defaultBg = c
 			}
 		}
-		// Add other window-level style properties if needed later.
 	}
 }
 
 func applyStylePropertiesToElement(props []krb.Property, doc *krb.Document, el *render.RenderElement) {
 	if doc == nil || el == nil {
-		return // Safety check
+		return
 	}
-
-	// Iterate through all properties defined in the resolved style block.
 	for _, prop := range props {
-		// *** Use prop.ID ***
+		switch prop.ID {
+		case krb.PropIDBgColor:
+			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
+				el.BgColor = c
+			}
+		case krb.PropIDFgColor:
+			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
+				el.FgColor = c
+			}
+		case krb.PropIDBorderColor:
+			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
+				el.BorderColor = c
+			}
+		case krb.PropIDBorderWidth:
+			if bw, ok := getByteValue(&prop); ok { // Single value for all borders
+				el.BorderWidths = [4]uint8{bw, bw, bw, bw}
+			} else if edges, okEdges := getEdgeInsetsValue(&prop); okEdges { // Individual values
+				el.BorderWidths = edges
+			}
+		case krb.PropIDPadding:
+			if p, ok := getEdgeInsetsValue(&prop); ok {
+				el.Padding = p
+			}
+		case krb.PropIDTextAlignment:
+			if align, ok := getByteValue(&prop); ok {
+				el.TextAlignment = align
+			}
+		case krb.PropIDVisibility:
+			if vis, ok := getByteValue(&prop); ok {
+				el.IsVisible = (vis != 0)
+			}
+			// Note: TextContent and ImageSource are typically not set by styles directly,
+			// but by direct properties or content fields in KRB (or resolved for components).
+		}
+	}
+}
+
+func applyDirectVisualPropertiesToAppElement(props []krb.Property, doc *krb.Document, el *render.RenderElement) {
+	for _, prop := range props {
+		switch prop.ID {
+		case krb.PropIDBgColor: // App can have a root visual background
+			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
+				el.BgColor = c
+			}
+		case krb.PropIDVisibility: // App's root element can be hidden
+			if vis, ok := getByteValue(&prop); ok {
+				el.IsVisible = (vis != 0)
+			}
+		}
+	}
+}
+
+func applyDirectPropertiesToElement(props []krb.Property, doc *krb.Document, el *render.RenderElement) {
+	for _, prop := range props {
 		switch prop.ID {
 		case krb.PropIDBgColor:
 			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
@@ -901,6 +1279,12 @@ func applyStylePropertiesToElement(props []krb.Property, doc *krb.Document, el *
 		case krb.PropIDBorderWidth:
 			if bw, ok := getByteValue(&prop); ok {
 				el.BorderWidths = [4]uint8{bw, bw, bw, bw}
+			} else if edges, okEdges := getEdgeInsetsValue(&prop); okEdges {
+				el.BorderWidths = edges
+			}
+		case krb.PropIDPadding:
+			if p, ok := getEdgeInsetsValue(&prop); ok {
+				el.Padding = p
 			}
 		case krb.PropIDTextAlignment:
 			if align, ok := getByteValue(&prop); ok {
@@ -910,592 +1294,340 @@ func applyStylePropertiesToElement(props []krb.Property, doc *krb.Document, el *
 			if vis, ok := getByteValue(&prop); ok {
 				el.IsVisible = (vis != 0)
 			}
-		case krb.PropIDOpacity:
-			if opacity, ok := getByteValue(&prop); ok {
-				_ = opacity // Placeholder
-				// TODO: Apply opacity if needed
-			}
-			// --- Add other styleable properties from previous correct versions ---
-		}
-	}
-}
-
-// applyDirectVisualPropertiesToAppElement applies direct visual props to App element.
-func applyDirectVisualPropertiesToAppElement(props []krb.Property, doc *krb.Document, el *render.RenderElement) {
-	for _, prop := range props {
-		switch prop.ID {
-		case krb.PropIDBgColor:
-			if c, ok := getColorValue(&prop, doc.Header.Flags); ok { el.BgColor = c }
-		case krb.PropIDVisibility:
-			if vis, ok := getByteValue(&prop); ok { el.IsVisible = (vis != 0) }
-		// Add other visual overrides if App element itself should be drawn differently
-		}
-	}
-}
-
-// applyDirectPropertiesToElement applies direct KRB properties.
-func applyDirectPropertiesToElement(props []krb.Property, doc *krb.Document, el *render.RenderElement) {
-	for _, prop := range props {
-		switch prop.ID {
-		case krb.PropIDBgColor:
-			if c, ok := getColorValue(&prop, doc.Header.Flags); ok { el.BgColor = c }
-		case krb.PropIDFgColor:
-			if c, ok := getColorValue(&prop, doc.Header.Flags); ok { el.FgColor = c }
-		case krb.PropIDBorderColor:
-			if c, ok := getColorValue(&prop, doc.Header.Flags); ok { el.BorderColor = c }
-		case krb.PropIDBorderWidth:
-			if bw, ok := getByteValue(&prop); ok { el.BorderWidths = [4]uint8{bw, bw, bw, bw} } else if edges, ok := getEdgeInsetsValue(&prop); ok { el.BorderWidths = edges }
-		case krb.PropIDTextAlignment:
-			if align, ok := getByteValue(&prop); ok { el.TextAlignment = align }
-		case krb.PropIDVisibility:
-			if vis, ok := getByteValue(&prop); ok { el.IsVisible = (vis != 0) }
 		case krb.PropIDTextContent:
-			if strIdx, ok := getByteValue(&prop); ok { if doc != nil && int(strIdx) < len(doc.Strings) { el.Text = doc.Strings[strIdx] } else { log.Printf("Warn: Elem %d invalid text content str index %d", el.OriginalIndex, strIdx) } }
+			if strIdx, ok := getByteValue(&prop); ok {
+				if textVal, textOk := getStringValueByIdx(doc, strIdx); textOk {
+					el.Text = textVal
+				}
+			}
 		case krb.PropIDImageSource:
-			if resIdx, ok := getByteValue(&prop); ok { el.ResourceIndex = resIdx }
-		case krb.PropIDWindowWidth, krb.PropIDWindowHeight, krb.PropIDWindowTitle, krb.PropIDResizable, krb.PropIDScaleFactor, krb.PropIDIcon, krb.PropIDVersion, krb.PropIDAuthor:
-			continue // Ignore app config props on non-app elements
+			if resIdx, ok := getByteValue(&prop); ok {
+				el.ResourceIndex = resIdx
+			}
+			// Window configuration properties are skipped here as they are for App config
+		case krb.PropIDWindowWidth, krb.PropIDWindowHeight, krb.PropIDWindowTitle, krb.PropIDResizable, krb.PropIDScaleFactor:
+			continue
 		}
 	}
 }
 
-// applyDirectPropertiesToConfig applies App properties to window config.
 func applyDirectPropertiesToConfig(props []krb.Property, doc *krb.Document, config *render.WindowConfig) {
-	if config == nil { return }
+	if config == nil {
+		return
+	}
 	for _, prop := range props {
 		switch prop.ID {
 		case krb.PropIDWindowWidth:
-			if w, ok := getShortValue(&prop); ok && w > 0 { config.Width = int(w) }
+			if w, ok := getShortValue(&prop); ok && w > 0 {
+				config.Width = int(w)
+			}
 		case krb.PropIDWindowHeight:
-			if h, ok := getShortValue(&prop); ok && h > 0 { config.Height = int(h) }
+			if h, ok := getShortValue(&prop); ok && h > 0 {
+				config.Height = int(h)
+			}
 		case krb.PropIDWindowTitle:
-			if s, ok := getStringValue(&prop, doc); ok { config.Title = s }
+			if strIdx := getFirstByteValue(&prop); strIdx != 0 || (len(doc.Strings) > 0 && doc.Strings[0] != "") { // Allow index 0 if valid string
+				if s, ok := getStringValueByIdx(doc, strIdx); ok {
+					config.Title = s
+				}
+			}
 		case krb.PropIDResizable:
-			if r, ok := getByteValue(&prop); ok { config.Resizable = (r != 0) }
+			if rVal, ok := getByteValue(&prop); ok {
+				config.Resizable = (rVal != 0)
+			}
 		case krb.PropIDScaleFactor:
-			if sf, ok := getFixedPointValue(&prop); ok && sf > 0 { config.ScaleFactor = sf }
-		case krb.PropIDBgColor:
-			if c, ok := getColorValue(&prop, doc.Header.Flags); ok { config.DefaultBg = c }
+			if sfRaw, ok := getShortValue(&prop); ok && sfRaw > 0 { // Ensure scale is positive
+				config.ScaleFactor = float32(sfRaw) / 256.0
+			}
+		case krb.PropIDBgColor: // This is App's default background
+			if c, ok := getColorValue(&prop, doc.Header.Flags); ok {
+				config.DefaultBg = c
+			}
 		}
 	}
 }
 
-// resolveElementText determines final text content.
 func resolveElementText(doc *krb.Document, el *render.RenderElement, style *krb.Style, styleOk bool) {
-	if el.Header.Type != krb.ElemTypeText && el.Header.Type != krb.ElemTypeButton { return }
-	resolvedText := ""; foundTextProp := false
-	if len(doc.Properties) > el.OriginalIndex {
+	if el.Header.Type != krb.ElemTypeText && el.Header.Type != krb.ElemTypeButton {
+		return
+	}
+	// Text might already be set by direct properties (from KRB or template)
+	if el.Text != "" {
+		return
+	}
+
+	resolvedText := ""
+	foundTextProp := false
+
+	// Check direct properties from the original KRB document if this element is from there
+	if doc != nil && el.OriginalIndex < len(doc.Properties) && len(doc.Properties[el.OriginalIndex]) > 0 {
 		for _, prop := range doc.Properties[el.OriginalIndex] {
 			if prop.ID == krb.PropIDTextContent {
-				if s, ok := getStringValue(&prop, doc); ok { resolvedText = s; foundTextProp = true; break }
+				if strIdx, ok := getByteValue(&prop); ok {
+					if s, textOk := getStringValueByIdx(doc, strIdx); textOk {
+						resolvedText = s
+						foundTextProp = true
+						break
+					}
+				}
 			}
 		}
 	}
-	if !foundTextProp && styleOk {
-		if prop, ok := getStylePropertyValue(style, krb.PropIDTextContent); ok {
-			if s, valOk := getStringValue(prop, doc); valOk { resolvedText = s }
+
+	// If not found in direct properties, check style (if applicable)
+	if !foundTextProp && styleOk && style != nil {
+		if styleProp, propInStyleOk := getStylePropertyValue(style, krb.PropIDTextContent); propInStyleOk {
+			if strIdx, ok := getByteValue(styleProp); ok {
+				if s, textOk := getStringValueByIdx(doc, strIdx); textOk {
+					resolvedText = s
+					// No foundTextProp = true here, direct props take precedence if they set el.Text
+				}
+			}
 		}
 	}
 	el.Text = resolvedText
 }
 
-// resolveElementImageSource determines final image resource index.
 func resolveElementImageSource(doc *krb.Document, el *render.RenderElement, style *krb.Style, styleOk bool) {
-	if el.Header.Type != krb.ElemTypeImage && el.Header.Type != krb.ElemTypeButton { return }
-	resolvedResIdx := uint8(render.InvalidResourceIndex); foundResProp := false
-	if len(doc.Properties) > el.OriginalIndex {
+	if el.Header.Type != krb.ElemTypeImage && el.Header.Type != krb.ElemTypeButton {
+		return
+	}
+	// ResourceIndex might already be set by direct properties
+	if el.ResourceIndex != render.InvalidResourceIndex {
+		return
+	}
+
+	resolvedResIdx := uint8(render.InvalidResourceIndex)
+	foundResProp := false
+
+	if doc != nil && el.OriginalIndex < len(doc.Properties) && len(doc.Properties[el.OriginalIndex]) > 0 {
 		for _, prop := range doc.Properties[el.OriginalIndex] {
 			if prop.ID == krb.PropIDImageSource {
-				if idx, ok := getByteValue(&prop); ok { resolvedResIdx = idx; foundResProp = true; break }
+				if idx, ok := getByteValue(&prop); ok {
+					resolvedResIdx = idx
+					foundResProp = true
+					break
+				}
 			}
 		}
 	}
-	if !foundResProp && styleOk {
-		if prop, ok := getStylePropertyValue(style, krb.PropIDImageSource); ok {
-			if idx, valOk := getByteValue(prop); valOk { resolvedResIdx = idx }
+
+	if !foundResProp && styleOk && style != nil {
+		if styleProp, propInStyleOk := getStylePropertyValue(style, krb.PropIDImageSource); propInStyleOk {
+			if idx, ok := getByteValue(styleProp); ok {
+				resolvedResIdx = idx
+			}
 		}
 	}
 	el.ResourceIndex = resolvedResIdx
 }
 
-// resolveEventHandlers resolves event callback names.
 func resolveEventHandlers(doc *krb.Document, el *render.RenderElement) {
-	el.EventHandlers = nil
-	if doc.Events != nil && el.OriginalIndex < len(doc.Events) && doc.Events[el.OriginalIndex] != nil {
+	// This function is primarily for elements originating from doc.Elements.
+	// Template elements have their events resolved during expandComponent.
+	el.EventHandlers = nil // Clear existing, if any
+
+	// Check if el.OriginalIndex is valid for doc.Events (i.e., it's an original element)
+	if doc != nil && doc.Events != nil &&
+		el.OriginalIndex < len(doc.Events) && // Ensure OriginalIndex is within bounds of doc.Events
+		doc.Events[el.OriginalIndex] != nil {
+
 		krbEvents := doc.Events[el.OriginalIndex]
 		if len(krbEvents) > 0 {
 			el.EventHandlers = make([]render.EventCallbackInfo, 0, len(krbEvents))
-		}
-		for _, krbEvent := range krbEvents {
-			if int(krbEvent.CallbackID) < len(doc.Strings) {
-				el.EventHandlers = append(el.EventHandlers, render.EventCallbackInfo{
-					EventType:   krbEvent.EventType,
-					HandlerName: doc.Strings[krbEvent.CallbackID],
-				})
-			} else {
-				log.Printf("Warn: Elem %d has invalid event callback string index %d", el.OriginalIndex, krbEvent.CallbackID)
+			for _, krbEvent := range krbEvents {
+				if handlerName, ok := getStringValueByIdx(doc, krbEvent.CallbackID); ok {
+					el.EventHandlers = append(el.EventHandlers, render.EventCallbackInfo{
+						EventType:   krbEvent.EventType,
+						HandlerName: handlerName,
+					})
+				} else {
+					log.Printf("Warn resolveEventHandlers: Elem %s (OrigIdx %d) has invalid event callback string index %d.",
+						el.SourceElementName, el.OriginalIndex, krbEvent.CallbackID)
+				}
 			}
 		}
 	}
 }
 
-// LoadAllTextures loads all required textures identified during PrepareTree.
-// This MUST be called AFTER rl.InitWindow() has successfully completed.
-func (r *RaylibRenderer) LoadAllTextures() error {
-	if r.docRef == nil {
-		return fmt.Errorf("cannot load textures, KRB document reference is nil (PrepareTree not called or failed?)")
-	}
-	if !rl.IsWindowReady() {
-		// This is a critical check before attempting any GPU operations
-		return fmt.Errorf("cannot load textures, Raylib window is not ready")
-	}
-
-	log.Println("LoadAllTextures: Starting texture loading...")
-	errCount := 0 // Optional: Count errors instead of returning on first one
-
-	// Call the actual loading logic
-	r.performTextureLoading(r.docRef, &errCount) // Pass pointer to error counter
-
-	log.Printf("LoadAllTextures: Texture loading complete. Encountered %d errors.", errCount)
-	if errCount > 0 {
-		// Return an error if any texture failed to load, or just log the warning
-		return fmt.Errorf("encountered %d errors during texture loading", errCount)
-	}
-	return nil
-}
-
-func (r *RaylibRenderer) performTextureLoading(doc *krb.Document, errorCounter *int) {
-	if doc == nil { *errorCounter++; return }
-	if r.elements == nil { *errorCounter++; return }
-
-	for i := range r.elements {
-		el := &r.elements[i]
-		needsTexture := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton) && el.ResourceIndex != render.InvalidResourceIndex
-		if !needsTexture { continue }
-
-		resIndex := el.ResourceIndex
-		if int(resIndex) >= len(doc.Resources) {
-			log.Printf("Error: Elem %d has invalid resource index %d (max %d)", el.OriginalIndex, resIndex, len(doc.Resources)-1)
-			*errorCounter++; el.TextureLoaded = false; continue
-		}
-		res := doc.Resources[resIndex]
-
-		// Check cache first
-		if loadedTex, exists := r.loadedTextures[resIndex]; exists {
-			el.Texture = loadedTex
-			el.TextureLoaded = (loadedTex.ID > 0) // Use ID check
-			if !el.TextureLoaded { log.Printf("Warn: Cached texture for Res %d (Elem %d) is no longer ready.", resIndex, el.OriginalIndex); *errorCounter++ }
-			continue
-		}
-
-		var texture rl.Texture2D
-		loadedOk := false
-
-		if res.Format == krb.ResFormatExternal {
-			if int(res.NameIndex) >= len(doc.Strings) { /* Log error */ *errorCounter++; el.TextureLoaded = false; continue }
-			resourceName := doc.Strings[res.NameIndex]
-			fullPath := filepath.Join(r.krbFileDir, resourceName)
-			if _, statErr := os.Stat(fullPath); os.IsNotExist(statErr) {
-				log.Printf("Error: Texture file not found: %s", fullPath)
-				*errorCounter++; el.TextureLoaded = false
-			} else {
-				img := rl.LoadImage(fullPath)
-				// Check if image loaded successfully using its data/dimensions
-				imageReady := img.Data != nil && img.Width > 0 && img.Height > 0
-				if imageReady {
-					if !rl.IsWindowReady() { /* Log critical error */ *errorCounter++; el.TextureLoaded = false
-					} else {
-						texture = rl.LoadTextureFromImage(img)
-						// Check if texture was created successfully using its ID
-						isReady := texture.ID > 0
-						if isReady { loadedOk = true } else { log.Printf("Error: Failed IsTextureReady check (ID==0) for texture Res %d after LoadTextureFromImage.", resIndex); *errorCounter++ }
-					}
-					rl.UnloadImage(img)
-				} else { log.Printf("Error: Failed LoadImage (CPU) for %s", fullPath); *errorCounter++ }
-			}
-		} else if res.Format == krb.ResFormatInline {
-			if res.InlineData != nil && res.InlineDataSize > 0 {
-				ext := ".png"; if int(res.NameIndex) < len(doc.Strings) { /* Determine ext from hint */ }
-				img := rl.LoadImageFromMemory(ext, res.InlineData, int32(len(res.InlineData)))
-				// Check if image loaded successfully
-				imageReady := img.Data != nil && img.Width > 0 && img.Height > 0
-				if imageReady {
-					if !rl.IsWindowReady() { /* Log critical error */ *errorCounter++; el.TextureLoaded = false
-					} else {
-						texture = rl.LoadTextureFromImage(img)
-						// Check if texture was created successfully
-						isReady := texture.ID > 0
-						if isReady { loadedOk = true } else { log.Printf("Error: Failed IsTextureReady check (ID==0) for inline texture Res %d after LoadTextureFromImage.", resIndex); *errorCounter++ }
-					}
-					rl.UnloadImage(img)
-				} else { log.Printf("Error: Failed LoadImageFromMemory (CPU) for inline Res %d", resIndex); *errorCounter++ }
-			} else { log.Printf("Error: Inline Resource %d has no data", resIndex); *errorCounter++ }
-		} else { log.Printf("Warn: Unknown resource format %d", res.Format); *errorCounter++ }
-
-		// Store texture and cache if loaded successfully
-		if loadedOk {
-			el.Texture = texture
-			el.TextureLoaded = true
-			r.loadedTextures[resIndex] = texture
-		} else {
-			el.TextureLoaded = false
-		}
-	}
-}
-
-
-// hasStyleSize checks if style includes size properties.
-func hasStyleSize(doc *krb.Document, el *render.RenderElement, propIDMax, propIDNormal krb.PropertyID) bool {
-	if style, ok := findStyle(doc, el.Header.StyleID); ok {
-		if _, maxOk := getStylePropertyValue(style, propIDMax); maxOk { return true }
-		// Optionally check for normal size prop if needed
-	}
-	return false
-}
-
-// findStyle gets style by 1-based ID.
 func findStyle(doc *krb.Document, styleID uint8) (*krb.Style, bool) {
-	if styleID == 0 || int(styleID) > len(doc.Styles) { return nil, false }
-	return &doc.Styles[styleID-1], true
+	if doc == nil || styleID == 0 || int(styleID) > len(doc.Styles) { // StyleID is 1-based
+		return nil, false
+	}
+	return &doc.Styles[styleID-1], true // Access 0-based slice
 }
 
-// getStylePropertyValue gets a property from a resolved style.
 func getStylePropertyValue(style *krb.Style, propID krb.PropertyID) (*krb.Property, bool) {
-	if style == nil { return nil, false }
-	for i := range style.Properties { if style.Properties[i].ID == propID { return &style.Properties[i], true } }
+	if style == nil {
+		return nil, false
+	}
+	for i := range style.Properties { // Iterate by index to get pointer
+		if style.Properties[i].ID == propID {
+			return &style.Properties[i], true
+		}
+	}
 	return nil, false
 }
 
 func findStyleIDByNameIndex(doc *krb.Document, nameIndex uint8) uint8 {
-	if doc == nil || nameIndex == 0 {
-		return 0
+	if doc == nil {
+		return 0 // Invalid style ID
 	}
-	// KRB Style Blocks are 1-based indexed in the header, but stored 0-based in the slice.
-	// The krb.Style struct holds the 1-based ID.
+	// Allow index 0 if it's a valid non-empty string, though style names are usually non-empty
+	if nameIndex == 0 {
+		if len(doc.Strings) == 0 || doc.Strings[0] == "" {
+			return 0 // Index 0 is not a valid style name if empty or table empty
+		}
+	}
 	for i := range doc.Styles {
-		// Compare the NameIndex field of the Style Block Header
 		if doc.Styles[i].NameIndex == nameIndex {
-			return doc.Styles[i].ID // Return the 1-based ID
+			return doc.Styles[i].ID // Return 1-based Style ID
 		}
 	}
 	return 0 // Not found
 }
 
-
 func getStyleColors(doc *krb.Document, styleID uint8, flags uint16) (bg rl.Color, fg rl.Color, ok bool) {
-	if doc == nil || styleID == 0 {
-		return rl.Blank, rl.White, false // Cannot look up style 0 or without doc
+	if doc == nil || styleID == 0 { // StyleID is 1-based
+		return rl.Blank, rl.White, false // Default colors, not OK
 	}
-	// Adjust ID to be 0-based index for the slice
-	styleIndex := int(styleID - 1)
+	styleIndex := int(styleID - 1) // Convert to 0-based
 	if styleIndex < 0 || styleIndex >= len(doc.Styles) {
-		log.Printf("WARN getStyleColors: Invalid style index %d (derived from ID %d)", styleIndex, styleID)
-		return rl.Blank, rl.White, false // Invalid index
+		return rl.Blank, rl.White, false
 	}
-
 	style := &doc.Styles[styleIndex]
-	// Default colors if not found in style
-	bg = rl.Blank // Default to transparent background
-	fg = rl.White // Default to white foreground
+	bg, fg = rl.Blank, rl.White // Initialize with defaults
+	foundBg, foundFg := false, false
 
-	foundBg := false
-	foundFg := false
-
-	// Iterate through the resolved properties of the target style
 	for _, prop := range style.Properties {
-		// *** MODIFIED: Use prop.ID instead of prop.PropertyID ***
 		if prop.ID == krb.PropIDBgColor {
-			if c, propOk := getColorValue(&prop, flags); propOk {
+			if c, pOk := getColorValue(&prop, flags); pOk {
 				bg = c
 				foundBg = true
 			}
-		// *** MODIFIED: Use prop.ID instead of prop.PropertyID ***
-		} else if prop.ID == krb.PropIDFgColor {
-			if c, propOk := getColorValue(&prop, flags); propOk {
+		}
+		if prop.ID == krb.PropIDFgColor {
+			if c, pOk := getColorValue(&prop, flags); pOk {
 				fg = c
 				foundFg = true
 			}
 		}
-		if foundBg && foundFg { break } // Optimization
+		if foundBg && foundFg { // Optimization: stop if both found
+			break
+		}
 	}
-	ok = true // Consider successful even if defaults used
-	return bg, fg, ok
+	// Return true if style was valid, even if colors weren't specifically in it (defaults used)
+	return bg, fg, true
 }
 
-// --- Value Parsing Helper Functions ---
 func getColorValue(prop *krb.Property, flags uint16) (rl.Color, bool) {
-	if prop == nil || prop.ValueType != krb.ValTypeColor { return rl.Color{}, false }
-	useExtended := (flags&krb.FlagExtendedColor) != 0
-	if useExtended { if len(prop.Value) == 4 { return rl.NewColor(prop.Value[0], prop.Value[1], prop.Value[2], prop.Value[3]), true }
-	} else { if len(prop.Value) == 1 { log.Printf("Warn: Palette color index %d used, but palettes not implemented.", prop.Value[0]); return rl.Magenta, true } }
-	log.Printf("Warn: Invalid color data size for prop ID %d.", prop.ID)
+	if prop == nil || prop.ValueType != krb.ValTypeColor {
+		return rl.Color{}, false
+	}
+	useExtended := (flags & krb.FlagExtendedColor) != 0
+	if useExtended {
+		if len(prop.Value) == 4 { // RGBA
+			return rl.NewColor(prop.Value[0], prop.Value[1], prop.Value[2], prop.Value[3]), true
+		}
+	} else {
+		if len(prop.Value) == 1 { // Palette index
+			log.Printf("Warn getColorValue: Palette color (index %d) requested, but palette system not implemented. Returning Magenta.", prop.Value[0])
+			return rl.Magenta, true // Placeholder for palette
+		}
+	}
+	log.Printf("Warn getColorValue: Invalid color data for PropID %X, ValueType %X, Size %d, ExtendedFlag %t", prop.ID, prop.ValueType, prop.Size, useExtended)
 	return rl.Color{}, false
 }
+
 func getByteValue(prop *krb.Property) (uint8, bool) {
-	if prop != nil && (prop.ValueType == krb.ValTypeByte || prop.ValueType == krb.ValTypeString || prop.ValueType == krb.ValTypeResource || prop.ValueType == krb.ValTypeEnum) && len(prop.Value) == 1 { return prop.Value[0], true }
+	if prop != nil &&
+		(prop.ValueType == krb.ValTypeByte ||
+			prop.ValueType == krb.ValTypeString || // If used as index
+			prop.ValueType == krb.ValTypeResource || // If used as index
+			prop.ValueType == krb.ValTypeEnum) && // Enum value
+		len(prop.Value) == 1 {
+		return prop.Value[0], true
+	}
 	return 0, false
 }
+
+func getFirstByteValue(prop *krb.Property) uint8 {
+	// Used for properties where the value is a single byte index (e.g., string index for title)
+	if prop != nil && len(prop.Value) > 0 {
+		return prop.Value[0]
+	}
+	return 0 // Or an invalid index marker if appropriate
+}
+
 func getShortValue(prop *krb.Property) (uint16, bool) {
-	if prop != nil && prop.ValueType == krb.ValTypeShort && len(prop.Value) == 2 { return binary.LittleEndian.Uint16(prop.Value), true }
+	if prop != nil && prop.ValueType == krb.ValTypeShort && len(prop.Value) == 2 {
+		return binary.LittleEndian.Uint16(prop.Value), true
+	}
 	return 0, false
 }
-func getStringValue(prop *krb.Property, doc *krb.Document) (string, bool) {
-	if prop != nil && prop.ValueType == krb.ValTypeString && len(prop.Value) == 1 {
-		idx := prop.Value[0]
-		if doc != nil && int(idx) < len(doc.Strings) { return doc.Strings[idx], true } else { log.Printf("Warn: Invalid string index %d for prop %d.", idx, prop.ID) }
+
+func getStringValueByIdx(doc *krb.Document, stringIndex uint8) (string, bool) {
+	if doc != nil && int(stringIndex) < len(doc.Strings) {
+		return doc.Strings[stringIndex], true
 	}
 	return "", false
 }
-func getFixedPointValue(prop *krb.Property) (float32, bool) {
-	if prop != nil && prop.ValueType == krb.ValTypePercentage && len(prop.Value) == 2 { return float32(binary.LittleEndian.Uint16(prop.Value)) / 256.0, true }
-	return 0, false
-}
+
 func getEdgeInsetsValue(prop *krb.Property) ([4]uint8, bool) {
-	if prop != nil && prop.ValueType == krb.ValTypeEdgeInsets && len(prop.Value) == 4 { return [4]uint8{prop.Value[0], prop.Value[1], prop.Value[2], prop.Value[3]}, true }
+	if prop != nil && prop.ValueType == krb.ValTypeEdgeInsets && len(prop.Value) == 4 {
+		return [4]uint8{prop.Value[0], prop.Value[1], prop.Value[2], prop.Value[3]}, true // T, R, B, L
+	}
 	return [4]uint8{}, false
 }
 
-// --- Generic Math/Slice Helpers ---
-func min(a, b int) int { if a < b { return a }; return b }
-func max(a, b int) int { if a > b { return a }; return b }
-func MuxInt(cond bool, a, b int) int { if cond { return a }; return b }
-func ReverseSliceInt(s []int) { for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 { s[i], s[j] = s[j], s[i] } }
-
-// --- Drawing Helper Functions ---
-func isEffectivelyAbsolute(el *render.RenderElement) bool {
-	if el == nil { return false }
-	return el.Header.LayoutAbsolute() || el.Header.PosX != 0 || el.Header.PosY != 0
-}
-
-func calculateBaseSize(el *render.RenderElement, scale float32, doc *krb.Document) (baseW int, baseH int) {
-	scaled := func(v uint16) int { return int(math.Round(float64(v) * float64(scale))) }
-	scaledU8 := func(v uint8) int { return int(math.Round(float64(v) * float64(scale))) }
-
-	if el.Header.Width > 0 { baseW = scaled(el.Header.Width) }
-	if el.Header.Height > 0 { baseH = scaled(el.Header.Height) }
-
-	if baseW == 0 || baseH == 0 {
-		if style, ok := findStyle(doc, el.Header.StyleID); ok {
-			if baseH == 0 { if prop, ok := getStylePropertyValue(style, krb.PropIDMaxHeight); ok { if h, valOk := getShortValue(prop); valOk { baseH = scaled(h) } } }
-			if baseW == 0 { if prop, ok := getStylePropertyValue(style, krb.PropIDMaxWidth); ok { if w, valOk := getShortValue(prop); valOk { baseW = scaled(w) } } }
-		}
-	}
-
-	if baseW == 0 || baseH == 0 {
-		intrinsicW, intrinsicH := 0, 0
-		if (el.Header.Type == krb.ElemTypeText || el.Header.Type == krb.ElemTypeButton) && el.Text != "" {
-			fontSize := int32(math.Max(1, math.Round(baseFontSize*float64(scale))))
-			textWidthMeasured := rl.MeasureText(el.Text, fontSize)
-			hPadding := scaledU8(el.BorderWidths[1]) + scaledU8(el.BorderWidths[3])
-			vPadding := scaledU8(el.BorderWidths[0]) + scaledU8(el.BorderWidths[2])
-			intrinsicW = int(textWidthMeasured) + hPadding
-			intrinsicH = int(fontSize) + vPadding
-		} else if el.Header.Type == krb.ElemTypeImage && el.TextureLoaded {
-			intrinsicW = int(math.Round(float64(el.Texture.Width) * float64(scale)))
-			intrinsicH = int(math.Round(float64(el.Texture.Height) * float64(scale)))
-		}
-		if baseW == 0 { baseW = intrinsicW }
-		if baseH == 0 { baseH = intrinsicH }
-	}
-	return baseW, baseH
-}
-
-func fitToChildren(el *render.RenderElement, clientAbsX, clientAbsY, borderL, borderT, borderR, borderB int, shouldAutoSizeW, shouldAutoSizeH bool) {
-	maxChildRelXExtent := 0; maxChildRelYExtent := 0; hasFlowChildren := false
-	for _, child := range el.Children {
-		if !isEffectivelyAbsolute(child) {
-			hasFlowChildren = true
-			relX := child.RenderX - clientAbsX; relY := child.RenderY - clientAbsY
-			xExtent := relX + child.RenderW; yExtent := relY + child.RenderH
-			if xExtent > maxChildRelXExtent { maxChildRelXExtent = xExtent }
-			if yExtent > maxChildRelYExtent { maxChildRelYExtent = yExtent }
-		}
-	}
-	if hasFlowChildren {
-		newW := maxChildRelXExtent + borderL + borderR; newH := maxChildRelYExtent + borderT + borderB
-		if shouldAutoSizeW { el.RenderW = max(1, newW) }
-		if shouldAutoSizeH { el.RenderH = max(1, newH) }
-	}
-}
-
-func calculateAlignmentOffsets(alignment uint8, availableSpace, totalUsedSpace, childCount int, isReversed bool) (startOffset, spacing int) {
-	unusedSpace := max(0, availableSpace-totalUsedSpace)
-	startOffset = 0; spacing = 0
-	switch alignment {
-	case krb.LayoutAlignCenter:       startOffset = unusedSpace / 2
-	case krb.LayoutAlignEnd:          startOffset = MuxInt(isReversed, 0, unusedSpace)
-	case krb.LayoutAlignSpaceBetween: if childCount > 1 { spacing = unusedSpace / (childCount - 1) }; startOffset = 0
-	default:                          startOffset = MuxInt(isReversed, unusedSpace, 0)
-	}
-	return startOffset, spacing
-}
-
-func calculateCrossAxisOffset(alignment uint8, crossAxisSize, childCrossSize int) int {
-	switch alignment {
-	case krb.LayoutAlignCenter: return (crossAxisSize - childCrossSize) / 2
-	case krb.LayoutAlignEnd:    return crossAxisSize - childCrossSize
-	default:                    return 0
-	}
-}
-
 func clampOpposingBorders(borderA, borderB, totalSize int) (int, int) {
-	if borderA+borderB >= totalSize { borderA = max(0, min(totalSize/2, borderA)); borderB = max(0, totalSize-borderA) }
+	if totalSize <= 0 {
+		return 0, 0
+	}
+	if borderA < 0 {
+		borderA = 0
+	}
+	if borderB < 0 {
+		borderB = 0
+	}
+	if borderA+borderB > totalSize { // If sum of borders exceeds total available size
+		// Proportional scaling (or simpler: cap each at half)
+		// For now, simple cap:
+		borderA = totalSize / 2
+		borderB = totalSize - borderA // Ensures sum is totalSize, handles odd totalSize
+	}
 	return borderA, borderB
 }
 
 func drawBorders(x, y, w, h, top, right, bottom, left int, color rl.Color) {
-	if top > 0 { rl.DrawRectangle(int32(x), int32(y), int32(w), int32(top), color) }
-	if bottom > 0 { rl.DrawRectangle(int32(x), int32(y+h-bottom), int32(w), int32(bottom), color) }
-	sideY := y + top; sideH := max(0, h-top-bottom)
-	if left > 0 { rl.DrawRectangle(int32(x), int32(sideY), int32(left), int32(sideH), color) }
-	if right > 0 { rl.DrawRectangle(int32(x+w-right), int32(sideY), int32(right), int32(sideH), color) }
-}
-
-func calculateContentArea(x, y, w, h, top, right, bottom, left int) (cx, cy, cw, ch int) {
-	cx = x + left; cy = y + top
-	cw = max(0, w-left-right)
-	ch = max(0, h-top-bottom)
-	return cx, cy, cw, ch
-}
-
-// drawContent renders the specific content (text or image) for an element
-// using the provided *effective* foreground color determined by the caller.
-func (r *RaylibRenderer) drawContent(el *render.RenderElement, cx, cy, cw, ch int, scale float32, effectiveFgColor rl.Color) {
-
-	// --- Draw Text ---
-	// Check if the element type is Text or Button and if there's text content.
-	if (el.Header.Type == krb.ElemTypeText || el.Header.Type == krb.ElemTypeButton) && el.Text != "" {
-		// Calculate scaled font size.
-		fontSize := int32(math.Max(1, math.Round(baseFontSize*float64(scale))))
-		// Measure text dimensions for alignment calculations.
-		textWidthMeasured := rl.MeasureText(el.Text, fontSize)
-		// Approximate text height based on font size for vertical centering.
-		textHeightMeasured := fontSize
-		// Initial draw position is the top-left of the content area.
-		textDrawX := cx
-		// Vertically center the text within the content height.
-		textDrawY := cy + (ch-int(textHeightMeasured))/2
-
-		// Apply horizontal text alignment based on element's property.
-		switch el.TextAlignment {
-		case krb.LayoutAlignCenter: // Center align
-			textDrawX = cx + (cw-int(textWidthMeasured))/2
-		case krb.LayoutAlignEnd: // Right align
-			textDrawX = cx + cw - int(textWidthMeasured)
-			// Default (krb.LayoutAlignStart) keeps textDrawX = cx (Left align).
-		}
-		// Draw the text using the calculated position, size, and effective color.
-		rl.DrawText(el.Text, int32(textDrawX), int32(textDrawY), fontSize, effectiveFgColor)
-	}
-
-	// --- Draw Image ---
-	// Check if the element type is Image or Button and if a texture was successfully loaded.
-	isImageElement := (el.Header.Type == krb.ElemTypeImage || el.Header.Type == krb.ElemTypeButton)
-	if isImageElement && el.TextureLoaded {
-		// Check texture validity using its ID before accessing Width/Height.
-		// A non-zero ID typically indicates a valid texture handle.
-		if el.Texture.ID > 0 {
-			// Get texture dimensions.
-			texWidth := float32(el.Texture.Width)
-			texHeight := float32(el.Texture.Height)
-
-			// Define the source rectangle (usually the whole texture).
-			sourceRec := rl.NewRectangle(0, 0, texWidth, texHeight)
-			// Define the destination rectangle within the element's content area.
-			destRec := rl.NewRectangle(float32(cx), float32(cy), float32(cw), float32(ch))
-			// Define origin for rotation/scaling (typically top-left).
-			origin := rl.NewVector2(0, 0)
-			// Define tint color (usually white for no tint).
-			tintColor := rl.White
-
-			// Check for valid drawing dimensions before calling Raylib function.
-			if destRec.Width > 0 && destRec.Height > 0 && sourceRec.Width > 0 && sourceRec.Height > 0 {
-				// Draw the texture stretched/scaled into the destination rectangle.
-				rl.DrawTexturePro(el.Texture, sourceRec, destRec, origin, 0.0, tintColor)
-			}
-		} else {
-			// Log a warning if TextureLoaded was true but the ID check failed.
-			log.Printf("WARN drawContent: Elem %d TextureLoaded is true, but texture ID is 0! Skipping image draw.", el.OriginalIndex)
-		}
-	}
-}
-
-
-func (r *RaylibRenderer) RegisterEventHandler(name string, handler func()) {
-	if name == "" || handler == nil {
-		log.Printf("WARN RENDERER: Invalid event handler registration attempt (name: '%s', handler nil: %t)", name, handler == nil)
+	if color.A == 0 { // Don't draw fully transparent borders
 		return
 	}
-	if r.eventHandlerMap == nil { r.eventHandlerMap = make(map[string]func()) } // Defensive init
-	if _, exists := r.eventHandlerMap[name]; exists { log.Printf("INFO: Overwriting standard event handler for callback name '%s'", name) }
-	r.eventHandlerMap[name] = handler
-	log.Printf("Registered standard event handler for callback name '%s'", name)
-}
-
-// RegisterCustomComponent: Uses instance map `r.customHandlers`.
-func (r *RaylibRenderer) RegisterCustomComponent(identifier string, handler render.CustomComponentHandler) error {
-	if identifier == "" || handler == nil {
-		return fmt.Errorf("invalid custom component registration (identifier: '%s', handler nil: %t)", identifier, handler == nil)
+	// Top border
+	if top > 0 {
+		rl.DrawRectangle(int32(x), int32(y), int32(w), int32(top), color)
 	}
-	if r.customHandlers == nil { r.customHandlers = make(map[string]render.CustomComponentHandler) } // Defensive init
-	if _, exists := r.customHandlers[identifier]; exists { log.Printf("INFO: Overwriting custom component handler for identifier '%s'", identifier) }
-	r.customHandlers[identifier] = handler
-	log.Printf("Registered custom component handler for '%s'", identifier)
-	return nil
-}
-
-func (r *RaylibRenderer) renderElementRecursiveWithCustomDraw(el *render.RenderElement, scale float32) {
-	if el == nil || !el.IsVisible { return }
-
-	skipStandardDraw := false
-	var drawErr error
-
-	// Check for Custom Draw Handler using component name
-	componentIdentifier, foundName := getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
-	if foundName && componentIdentifier != "" {
-		if handler, foundHandler := r.customHandlers[componentIdentifier]; foundHandler {
-			if drawer, ok := handler.(interface { Draw(el *render.RenderElement, scale float32, rendererInstance render.Renderer) (bool, error) }); ok {
-				skipStandardDraw, drawErr = drawer.Draw(el, scale, r)
-				if drawErr != nil { log.Printf("ERROR: Custom Draw handler for '%s' [Elem %d] failed: %v", componentIdentifier, el.OriginalIndex, drawErr) }
-			}
+	// Bottom border
+	if bottom > 0 {
+		rl.DrawRectangle(int32(x), int32(y+h-bottom), int32(w), int32(bottom), color)
+	}
+	// Calculate remaining height for side borders
+	sideY := y + top
+	sideH := h - top - bottom
+	if sideH > 0 { // Only draw side borders if there's height for them
+		// Left border
+		if left > 0 {
+			rl.DrawRectangle(int32(x), int32(sideY), int32(left), int32(sideH), color)
+		}
+		// Right border
+		if right > 0 {
+			rl.DrawRectangle(int32(x+w-right), int32(sideY), int32(right), int32(sideH), color)
 		}
 	}
-
-	// Perform Standard Drawing (if not skipped)
-	if !skipStandardDraw {
-		r.renderElementRecursive(el, scale) // <<< CALL THE METHOD VERSION
-	}
-
-	// Recursively Draw Children (using this function to allow custom child drawing)
-	for _, child := range el.Children {
-		r.renderElementRecursiveWithCustomDraw(child, scale)
-	}
 }
 
-// ApplyCustomComponentLayoutAdjustments uses instance map `r.customHandlers` and identifies components via `_componentName`.
-func (r *RaylibRenderer) ApplyCustomComponentLayoutAdjustments(elements []*render.RenderElement, doc *krb.Document) { // <<< Changed to method
-    if doc == nil || len(r.customHandlers) == 0 { // Access instance map 'r.customHandlers'.
-        return // Skip if no doc or no handlers registered.
-    }
-
-    for _, el := range elements {
-        if el == nil { continue }
-
-        // Explicit Component Identification using the convention key.
-        // Assumes getCustomPropertyValue exists (likely in custom_component_registry.go or utils)
-        componentIdentifier, found := getCustomPropertyValue(el, componentNameConventionKey, doc)
-
-        if found && componentIdentifier != "" {
-            // Look up handler in the instance map.
-            handler, handlerFound := r.customHandlers[componentIdentifier] // Access instance map.
-
-            if handlerFound {
-                // Call the handler's layout adjustment method.
-                err := handler.HandleLayoutAdjustment(el, doc)
-                if err != nil {
-                    log.Printf("ERROR: Custom layout handler for '%s' [Elem %d] failed: %v", componentIdentifier, el.OriginalIndex, err)
-                }
-            }
-        }
-    }
+func ReverseSliceInt(s []int) {
+	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+		s[i], s[j] = s[j], s[i]
+	}
 }
