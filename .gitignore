@@ -10,3 +10,4 @@ dist/*
 # go specific
 !impl/go/cmd/kryon-raylib
 impl/go/examples/button/button.krb
+main

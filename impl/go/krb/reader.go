@@ -26,21 +26,21 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 
 	// Parse header fields according to KRB v0.4
 	copy(doc.Header.Magic[:], headerBuf[0:4])
-	doc.Header.Version = readU16LE(headerBuf[4:6])
-	doc.Header.Flags = readU16LE(headerBuf[6:8])
-	doc.Header.ElementCount = readU16LE(headerBuf[8:10])
-	doc.Header.StyleCount = readU16LE(headerBuf[10:12])
-	doc.Header.ComponentDefCount = readU16LE(headerBuf[12:14]) // New in v0.4
-	doc.Header.AnimationCount = readU16LE(headerBuf[14:16])
-	doc.Header.StringCount = readU16LE(headerBuf[16:18])
-	doc.Header.ResourceCount = readU16LE(headerBuf[18:20])
-	doc.Header.ElementOffset = readU32LE(headerBuf[20:24])
-	doc.Header.StyleOffset = readU32LE(headerBuf[24:28])
-	doc.Header.ComponentDefOffset = readU32LE(headerBuf[28:32]) // New in v0.4
-	doc.Header.AnimationOffset = readU32LE(headerBuf[32:36])
-	doc.Header.StringOffset = readU32LE(headerBuf[36:40])
-	doc.Header.ResourceOffset = readU32LE(headerBuf[40:44])
-	doc.Header.TotalSize = readU32LE(headerBuf[44:48])
+	doc.Header.Version = ReadU16LE(headerBuf[4:6])
+	doc.Header.Flags = ReadU16LE(headerBuf[6:8])
+	doc.Header.ElementCount = ReadU16LE(headerBuf[8:10])
+	doc.Header.StyleCount = ReadU16LE(headerBuf[10:12])
+	doc.Header.ComponentDefCount = ReadU16LE(headerBuf[12:14]) // New in v0.4
+	doc.Header.AnimationCount = ReadU16LE(headerBuf[14:16])
+	doc.Header.StringCount = ReadU16LE(headerBuf[16:18])
+	doc.Header.ResourceCount = ReadU16LE(headerBuf[18:20])
+	doc.Header.ElementOffset = ReadU32LE(headerBuf[20:24])
+	doc.Header.StyleOffset = ReadU32LE(headerBuf[24:28])
+	doc.Header.ComponentDefOffset = ReadU32LE(headerBuf[28:32]) // New in v0.4
+	doc.Header.AnimationOffset = ReadU32LE(headerBuf[32:36])
+	doc.Header.StringOffset = ReadU32LE(headerBuf[36:40])
+	doc.Header.ResourceOffset = ReadU32LE(headerBuf[40:44])
+	doc.Header.TotalSize = ReadU32LE(headerBuf[44:48])
 
 	// Validate Magic Number
 	if !bytes.Equal(doc.Header.Magic[:], MagicNumber[:]) {
@@ -104,10 +104,10 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 			doc.Elements[i] = ElementHeader{
 				Type:            ElementType(elementHeaderBuf[0]),
 				ID:              elementHeaderBuf[1],
-				PosX:            readU16LE(elementHeaderBuf[2:4]),
-				PosY:            readU16LE(elementHeaderBuf[4:6]),
-				Width:           readU16LE(elementHeaderBuf[6:8]),
-				Height:          readU16LE(elementHeaderBuf[8:10]),
+				PosX:            ReadU16LE(elementHeaderBuf[2:4]),
+				PosY:            ReadU16LE(elementHeaderBuf[4:6]),
+				Width:           ReadU16LE(elementHeaderBuf[6:8]),
+				Height:          ReadU16LE(elementHeaderBuf[8:10]),
 				Layout:          elementHeaderBuf[10],
 				StyleID:         elementHeaderBuf[11],
 				PropertyCount:   elementHeaderBuf[12],
@@ -198,7 +198,7 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 				for j := uint8(0); j < elemHdr.ChildCount; j++ {
 					offset := int(j) * ChildRefSize
 					doc.ChildRefs[i][j] = ChildRef{
-						ChildOffset: readU16LE(childRefBuf[offset : offset+ChildRefSize]),
+						ChildOffset: ReadU16LE(childRefBuf[offset : offset+ChildRefSize]),
 					}
 				}
 			}
@@ -380,7 +380,7 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 		if _, err := io.ReadFull(r, countBuf); err != nil {
 			return nil, fmt.Errorf("krb read: failed to read string table count: %w", err)
 		}
-		tableCount := readU16LE(countBuf)
+		tableCount := ReadU16LE(countBuf)
 		if tableCount != doc.Header.StringCount {
 			log.Printf("Warning: KRB String Table count mismatch. Header: %d, Table: %d. Using header count.", doc.Header.StringCount, tableCount)
 		}
@@ -412,7 +412,7 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 		if _, err := io.ReadFull(r, countBuf); err != nil {
 			return nil, fmt.Errorf("krb read: failed to read resource table count: %w", err)
 		}
-		tableCount := readU16LE(countBuf)
+		tableCount := ReadU16LE(countBuf)
 		if tableCount != doc.Header.ResourceCount {
 			log.Printf("Warning: KRB Resource Table count mismatch. Header: %d, Table: %d. Using header count.", doc.Header.ResourceCount, tableCount)
 		}
@@ -437,7 +437,7 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 				if _, err := io.ReadFull(r, resInlineSizeBuf); err != nil {
 					return nil, fmt.Errorf("krb read: failed to read inline resource size %d: %w", i, err)
 				}
-				res.InlineDataSize = readU16LE(resInlineSizeBuf)
+				res.InlineDataSize = ReadU16LE(resInlineSizeBuf)
 				if res.InlineDataSize > 0 {
 					res.InlineData = make([]byte, res.InlineDataSize)
 					if _, err := io.ReadFull(r, res.InlineData); err != nil {
