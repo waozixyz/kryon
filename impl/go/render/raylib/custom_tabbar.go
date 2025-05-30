@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/waozixyz/kryon/impl/go/krb"
-	"github.com/waozixyz/kryon/impl/go/krb/utils"
 	"github.com/waozixyz/kryon/impl/go/render"
 )
 
@@ -103,8 +102,8 @@ func (h *TabBarHandler) HandleLayoutAdjustment(el *render.RenderElement, doc *kr
 	}
 
 	// Ensure minimum dimensions for the TabBar itself
-	finalW := maxF(1.0, newW)
-	finalH := maxF(1.0, newH)
+	finalW := MaxF(1.0, newW)
+	finalH := MaxF(1.0, newH)
 
 	frameChanged := (newX != el.RenderX || newY != el.RenderY || finalW != el.RenderW || finalH != el.RenderH)
 
@@ -144,28 +143,28 @@ func (h *TabBarHandler) HandleLayoutAdjustment(el *render.RenderElement, doc *kr
 		switch strings.ToLower(position) { // Use the resolved position
 		case "bottom":
 			// Sibling (content area) height should be from its current top to the TabBar's new top
-			mainContentSibling.RenderH = maxF(1.0, el.RenderY - mainContentSibling.RenderY)
+			mainContentSibling.RenderH = MaxF(1.0, el.RenderY - mainContentSibling.RenderY)
 			// Sibling width and X position usually remain unchanged
 		case "top":
 			// Sibling (content area) new top is the TabBar's new bottom
 			newSibY := el.RenderY + el.RenderH
 			// Sibling's new height is its original bottom edge minus its new top edge
-			mainContentSibling.RenderH = maxF(1.0, (origSiblingY + origSiblingH) - newSibY)
+			mainContentSibling.RenderH = MaxF(1.0, (origSiblingY + origSiblingH) - newSibY)
 			mainContentSibling.RenderY = newSibY
 			// Sibling width and X position usually remain unchanged
 		case "left":
 			newSibX := el.RenderX + el.RenderW
-			mainContentSibling.RenderW = maxF(1.0, (origSiblingX + origSiblingW) - newSibX)
+			mainContentSibling.RenderW = MaxF(1.0, (origSiblingX + origSiblingW) - newSibX)
 			mainContentSibling.RenderX = newSibX
 			// Sibling height and Y position usually remain unchanged
 		case "right":
 			// Sibling (content area) width should be from its current left to the TabBar's new left
-			mainContentSibling.RenderW = maxF(1.0, el.RenderX - mainContentSibling.RenderX)
+			mainContentSibling.RenderW = MaxF(1.0, el.RenderX - mainContentSibling.RenderX)
 			// Sibling height and Y position usually remain unchanged
 		}
 		// Ensure non-negative dimensions for sibling after adjustment
-		mainContentSibling.RenderW = maxF(0, mainContentSibling.RenderW)
-		mainContentSibling.RenderH = maxF(0, mainContentSibling.RenderH)
+		mainContentSibling.RenderW = MaxF(0, mainContentSibling.RenderW)
+		mainContentSibling.RenderH = MaxF(0, mainContentSibling.RenderH)
 
 		log.Printf("DEBUG TabBarHandler [%s]: Sibling [%s] frame adjusted from (X:%.1f,Y:%.1f W:%.1fxH:%.1f) to (X:%.1f,Y:%.1f W:%.1fxH:%.1f)",
 			elIDStr, siblingIDStr,
@@ -197,7 +196,7 @@ func (h *TabBarHandler) HandleLayoutAdjustment(el *render.RenderElement, doc *kr
 		}
 	}
 	// Ensure scale factor is at least 1.0
-	childLayoutScaleFactor = maxF(1.0, childLayoutScaleFactor)
+	childLayoutScaleFactor = MaxF(1.0, childLayoutScaleFactor)
 
 	log.Printf("DEBUG TabBarHandler [%s]: Relaying out its own children within its new frame (X:%.1f,Y:%.1f W:%.1fxH:%.1f). Effective scale for children: %.2f",
 		elIDStr, el.RenderX, el.RenderY, el.RenderW, el.RenderH, childLayoutScaleFactor)
@@ -213,6 +212,3 @@ func (h *TabBarHandler) HandleLayoutAdjustment(el *render.RenderElement, doc *kr
 
 	return nil
 }
-
-// Note: maxF, GetCustomPropertyValue, PerformLayoutChildren, applyDirectPropertiesToConfig
-// are expected to be defined and exported in the raylib_renderer.go file within the same package.

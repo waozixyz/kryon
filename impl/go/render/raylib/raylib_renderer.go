@@ -163,8 +163,8 @@ func (r *RaylibRenderer) PrepareTree(doc *krb.Document, krbFilePath string) ([]*
 		// Check for component name using the ORIGINAL custom properties from doc.CustomProperties[i]
 		var componentName string
 		if doc.CustomProperties != nil && i < len(doc.CustomProperties) {
-			// Use the RenderElement directly for getCustomPropertyValue
-			componentName, _ = getCustomPropertyValue(renderEl, componentNameConventionKey, doc)
+			// Use the RenderElement directly for GetCustomPropertyValue
+			componentName, _ = GetCustomPropertyValue(renderEl, componentNameConventionKey, doc)
 		}
 
 		if componentName != "" {
@@ -205,7 +205,7 @@ func (r *RaylibRenderer) PrepareTree(doc *krb.Document, krbFilePath string) ([]*
 
 		var componentName string
 		// Custom properties for instanceElement were resolved from doc.CustomProperties[i]
-		componentName, _ = getCustomPropertyValue(instanceElement, componentNameConventionKey, doc)
+		componentName, _ = GetCustomPropertyValue(instanceElement, componentNameConventionKey, doc)
 
 		if componentName != "" {
 			compDef := r.findComponentDefinition(doc, componentName)
@@ -652,6 +652,524 @@ func (r *RaylibRenderer) buildFullElementTree(initialElementCount int) error {
 	return nil
 }
 
+
+// GetCustomPropertyValue retrieves the string value of a custom property for a given RenderElement.
+func GetCustomPropertyValue(el *render.RenderElement, keyName string, doc *krb.Document) (string, bool) {
+	if doc == nil || el == nil {
+		// log.Printf("Debug GetCustomPropertyValue: Called with nil doc or el for key '%s'", keyName)
+		return "", false
+	}
+
+	// 1. Find the targetKeyIndex for 'keyName' in the document's string table.
+	var targetKeyIndex uint8 = 0xFF // Use 0xFF as a sentinel for not found
+	keyFoundInStrings := false
+	for idx, str := range doc.Strings {
+		if str == keyName {
+			targetKeyIndex = uint8(idx)
+			keyFoundInStrings = true
+			break
+		}
+	}
+
+	if !keyFoundInStrings {
+		// log.Printf("Debug GetCustomPropertyValue: Key '%s' not found in document string table.", keyName)
+		return "", false // Key name itself isn't defined in the KRB strings.
+	}
+
+	// 2. Access custom properties for the element.
+	// Custom properties are stored in doc.CustomProperties, indexed by el.OriginalIndex.
+	// This assumes el.OriginalIndex correctly maps to the element's entry in doc.CustomProperties
+	// if 'el' is one of the initial elements from doc.Elements.
+	// If 'el' was instantiated from a template, its custom properties are not directly
+	// obtained this way unless the expansion process specifically populates something equivalent
+	// or merges them. For now, this function is most effective for instance placeholders.
+
+	if el.OriginalIndex < 0 || el.OriginalIndex >= len(doc.CustomProperties) {
+		// log.Printf("Debug GetCustomPropertyValue: el.OriginalIndex %d out of bounds for doc.CustomProperties (len %d) for key '%s', element '%s'", el.OriginalIndex, len(doc.CustomProperties), keyName, el.SourceElementName)
+		return "", false
+	}
+
+	elementCustomProps := doc.CustomProperties[el.OriginalIndex]
+	if elementCustomProps == nil || len(elementCustomProps) == 0 {
+		// log.Printf("Debug GetCustomPropertyValue: No custom properties found for element '%s' (OrigIdx %d) for key '%s'", el.SourceElementName, el.OriginalIndex, keyName)
+		return "", false
+	}
+
+	// 3. Iterate through the element's custom properties to find the one matching targetKeyIndex.
+	for _, prop := range elementCustomProps {
+		if prop.KeyIndex == targetKeyIndex {
+			// Found the custom property by key. Now check its value type and size.
+			// We expect it to be a string index (ValTypeString or ValTypeResource)
+			// and its size to be 1 (the byte containing the string index).
+			if (prop.ValueType == krb.ValTypeString || prop.ValueType == krb.ValTypeResource) && prop.Size == 1 {
+				if len(prop.Value) == 1 {
+					valueStringIndex := prop.Value[0]
+					if int(valueStringIndex) < len(doc.Strings) {
+						// Successfully found the key and a valid string index for its value.
+						return doc.Strings[valueStringIndex], true
+					}
+					log.Printf("WARN GetCustomPropertyValue: Custom prop key '%s' (idx %d) found for element '%s' (OrigIdx %d), but its value string index %d is out of bounds for doc.Strings (len %d).",
+						keyName, targetKeyIndex, el.SourceElementName, el.OriginalIndex, valueStringIndex, len(doc.Strings))
+				} else {
+					log.Printf("WARN GetCustomPropertyValue: Custom prop key '%s' (idx %d) found for element '%s' (OrigIdx %d), but its value data is empty despite Size=1.",
+						keyName, targetKeyIndex, el.SourceElementName, el.OriginalIndex)
+				}
+			} else {
+				log.Printf("WARN GetCustomPropertyValue: Custom prop key '%s' (idx %d) found for element '%s' (OrigIdx %d), but it has an unexpected ValueType %X or Size %d. Expected String/Resource index type.",
+					keyName, targetKeyIndex, el.SourceElementName, el.OriginalIndex, prop.ValueType, prop.Size)
+			}
+			return "", false // Found the key, but its value wasn't a valid string index.
+		}
+	}
+
+	// log.Printf("Debug GetCustomPropertyValue: Custom prop key '%s' (idx %d) not found among custom properties of element '%s' (OrigIdx %d).", keyName, targetKeyIndex, el.SourceElementName, el.OriginalIndex)
+	return "", false // Key was not among the custom properties for this element.
+}
+
+// PerformLayout calculates the final screen position and dimensions for an element and its descendants.
+func PerformLayout(
+	el *render.RenderElement,
+	parentContentX, parentContentY, parentContentW, parentContentH float32,
+	scale float32,
+	doc *krb.Document,
+) {
+	if el == nil {
+		return
+	}
+
+	elementIdentifier := el.SourceElementName
+	if elementIdentifier == "" {
+		elementIdentifier = fmt.Sprintf("Elem %d (Type %X)", el.OriginalIndex, el.Header.Type)
+		if doc != nil && el.Header.ID != 0 {
+			if idName, idFound := getStringValueByIdx(doc, el.Header.ID); idFound { // Assuming getStringValueByIdx is available
+				elementIdentifier += fmt.Sprintf(" ID:'%s'", idName)
+			}
+		}
+	}
+	// Temporarily disable detailed layout logging per element to reduce noise, can be re-enabled for debugging
+	// log.Printf("--- Layout Start for Elem[%d] Name='%s' --- ParentCW=%.1f, ParentCH=%.1f",
+	// 	el.OriginalIndex, elementIdentifier, parentContentW, parentContentH)
+
+	isRootElement := (el.Parent == nil)
+	scaledUint16Local := func(v uint16) float32 { return float32(v) * scale } // Local helper for clarity
+
+	// --- Step 1: Determine EXPLICIT Size from KRB Header or Properties ---
+	hasExplicitWidth := false
+	desiredWidth := float32(0.0)
+	if el.Header.Width > 0 {
+		desiredWidth = scaledUint16Local(el.Header.Width)
+		hasExplicitWidth = true
+		// log.Printf("Layout Elem[%d]: Has explicit KRB Header.Width: %.1f (scaled from %d)", el.OriginalIndex, desiredWidth, el.Header.Width)
+	}
+
+	hasExplicitHeight := false
+	desiredHeight := float32(0.0)
+	if el.Header.Height > 0 {
+		desiredHeight = scaledUint16Local(el.Header.Height)
+		hasExplicitHeight = true
+		// log.Printf("Layout Elem[%d]: Has explicit KRB Header.Height: %.1f (scaled from %d)", el.OriginalIndex, desiredHeight, el.Header.Height)
+	}
+
+	// KRB Properties (MaxWidth/MaxHeight from direct properties) can also set/override explicit size
+	if doc != nil && el.OriginalIndex < len(doc.Properties) && len(doc.Properties[el.OriginalIndex]) > 0 {
+		elementDirectProps := doc.Properties[el.OriginalIndex]
+		// MaxWidth property
+		propWVal, propWType, _, propWErr := getNumericValueForSizeProp(elementDirectProps, krb.PropIDMaxWidth, doc) // Assuming getNumericValueForSizeProp is available
+		if propWErr == nil {
+			explicitPropWidth := MuxFloat32(propWType == krb.ValTypePercentage, (propWVal/256.0)*parentContentW, propWVal*scale)
+			if !hasExplicitWidth || explicitPropWidth < desiredWidth {
+				desiredWidth = explicitPropWidth
+				hasExplicitWidth = true
+				// log.Printf("Layout Elem[%d]: Width set/capped by KRB PropIDMaxWidth: %.1f", el.OriginalIndex, desiredWidth)
+			}
+		}
+		// MaxHeight property
+		propHVal, propHType, _, propHErr := getNumericValueForSizeProp(elementDirectProps, krb.PropIDMaxHeight, doc) // Assuming getNumericValueForSizeProp is available
+		if propHErr == nil {
+			explicitPropHeight := MuxFloat32(propHType == krb.ValTypePercentage, (propHVal/256.0)*parentContentH, propHVal*scale)
+			if !hasExplicitHeight || explicitPropHeight < desiredHeight {
+				desiredHeight = explicitPropHeight
+				hasExplicitHeight = true
+				// log.Printf("Layout Elem[%d]: Height set/capped by KRB PropIDMaxHeight: %.1f", el.OriginalIndex, desiredHeight)
+			}
+		}
+	}
+
+	// --- Step 2: Apply DEFAULT SIZING if not explicit and not growing/absolute ---
+	if !hasExplicitWidth && !el.Header.LayoutGrow() && !el.Header.LayoutAbsolute() {
+		desiredWidth = parentContentW // Default to parent's available content width
+		// log.Printf("Layout Elem[%d]: Width NOT explicit, defaulting to parentContentW: %.1f", el.OriginalIndex, desiredWidth)
+	}
+
+	if !hasExplicitHeight && !el.Header.LayoutGrow() && !el.Header.LayoutAbsolute() {
+		desiredHeight = parentContentH // Default to parent's available content height
+		// log.Printf("Layout Elem[%d]: Height NOT explicit, defaulting to parentContentH: %.1f", el.OriginalIndex, desiredHeight)
+	}
+
+	// Root elements usually take full parent space (screen dimensions)
+	if isRootElement {
+		desiredWidth = parentContentW
+		desiredHeight = parentContentH
+		// log.Printf("Layout Elem[%d]: Is ROOT, taking parent space: W=%.1f, H=%.1f", el.OriginalIndex, desiredWidth, desiredHeight)
+	}
+
+	el.RenderW = MaxF(0, desiredWidth)  // Use exported MaxF
+	el.RenderH = MaxF(0, desiredHeight) // Use exported MaxF
+	// log.Printf("Layout Elem[%d]: After explicit/default: RenderW=%.1f, RenderH=%.1f", el.OriginalIndex, el.RenderW, el.RenderH)
+
+	// --- Step 3: Determine Render Position ---
+	el.RenderX = parentContentX // Default to parent's content origin
+	el.RenderY = parentContentY
+
+	if el.Header.LayoutAbsolute() || (!isRootElement && (el.Header.PosX != 0 || el.Header.PosY != 0)) {
+		offsetX := scaledUint16Local(el.Header.PosX)
+		offsetY := scaledUint16Local(el.Header.PosY)
+		if el.Parent != nil { // Position relative to parent's top-left corner for absolute
+			el.RenderX = el.Parent.RenderX + offsetX
+			el.RenderY = el.Parent.RenderY + offsetY
+		} else { // If root and absolute (uncommon, but handle), relative to initial parentContentX/Y
+			el.RenderX = parentContentX + offsetX
+			el.RenderY = parentContentY + offsetY
+		}
+	}
+	// Note: For flow layout, final X/Y is determined by PerformLayoutChildren
+
+	// --- Step 4: Calculate Content Area for Children (used by PerformLayoutChildren) ---
+	// These are logical units, scaled within PerformLayoutChildren or when drawing
+	paddingTopLogical := el.Padding[0]
+	paddingRightLogical := el.Padding[1]
+	paddingBottomLogical := el.Padding[2]
+	paddingLeftLogical := el.Padding[3]
+	borderTopLogical := el.BorderWidths[0]
+	borderRightLogical := el.BorderWidths[1]
+	borderBottomLogical := el.BorderWidths[2]
+	borderLeftLogical := el.BorderWidths[3]
+
+	// Scale them for calculating child content area
+	scaledPaddingTop := ScaledF32(paddingTopLogical, scale) // Use exported ScaledF32
+	scaledPaddingRight := ScaledF32(paddingRightLogical, scale)
+	scaledPaddingBottom := ScaledF32(paddingBottomLogical, scale)
+	scaledPaddingLeft := ScaledF32(paddingLeftLogical, scale)
+	scaledBorderTop := ScaledF32(borderTopLogical, scale)
+	scaledBorderRight := ScaledF32(borderRightLogical, scale)
+	scaledBorderBottom := ScaledF32(borderBottomLogical, scale)
+	scaledBorderLeft := ScaledF32(borderLeftLogical, scale)
+
+	childContentAreaX := el.RenderX + scaledBorderLeft + scaledPaddingLeft
+	childContentAreaY := el.RenderY + scaledBorderTop + scaledPaddingTop
+	childAvailableWidth := el.RenderW - scaledBorderLeft - scaledBorderRight - scaledPaddingLeft - scaledPaddingRight
+	childAvailableHeight := el.RenderH - scaledBorderTop - scaledBorderBottom - scaledPaddingTop - scaledPaddingBottom
+
+	childAvailableWidth = MaxF(0, childAvailableWidth)   // Use exported MaxF
+	childAvailableHeight = MaxF(0, childAvailableHeight) // Use exported MaxF
+
+	// log.Printf("Layout Elem[%d]: Child Content Area: X=%.1f,Y=%.1f W=%.1f,H=%.1f (based on el.RenderW=%.1f, el.RenderH=%.1f)",
+	// 	el.OriginalIndex, childContentAreaX, childContentAreaY, childAvailableWidth, childAvailableHeight, el.RenderW, el.RenderH)
+
+	// --- Step 5: Layout Children Recursively ---
+	// Children are laid out within the available space calculated above.
+	// el.Header.ChildCount refers to children from original KRB, el.Children is the actual runtime tree.
+	if len(el.Children) > 0 { // Check actual children in RenderElement tree
+		// log.Printf("Layout Elem[%d]: Has %d RenderElement children. Calling PerformLayoutChildren.", el.OriginalIndex, len(el.Children))
+		PerformLayoutChildren(el, childContentAreaX, childContentAreaY, childAvailableWidth, childAvailableHeight, scale, doc) // Call exported PerformLayoutChildren
+
+		// --- Step 6: Content Hugging (Primarily for Height if not 'grow' or explicit height) ---
+		if !hasExplicitHeight && !el.Header.LayoutGrow() && !el.Header.LayoutAbsolute() {
+			maxChildExtentY := float32(0.0) // Relative to childContentAreaY
+			for _, child := range el.Children {
+				if child != nil && !child.Header.LayoutAbsolute() { // Only consider flow children for hugging
+					// child.RenderY is absolute. Convert to relative to childContentAreaY for extent calc.
+					childRelativeY := child.RenderY - childContentAreaY
+					currentChildExtent := childRelativeY + child.RenderH
+					if currentChildExtent > maxChildExtentY {
+						maxChildExtentY = currentChildExtent
+					}
+				}
+			}
+			// The height needed by content is maxChildExtentY.
+			// Add back borders and padding to get the new total desired height for the parent.
+			contentHeightFromChildren := maxChildExtentY + scaledBorderTop + scaledBorderBottom + scaledPaddingTop + scaledPaddingBottom
+			if contentHeightFromChildren > el.RenderH {
+				// log.Printf("Layout Elem[%d]: Children make it TALLER (%.1f from content extent %.1f) than current RenderH (%.1f). Expanding height.",
+				// 	el.OriginalIndex, contentHeightFromChildren, maxChildExtentY, el.RenderH)
+				el.RenderH = contentHeightFromChildren
+			}
+		}
+		// A similar logic could be applied for width if desired (e.g. for horizontal content hugging)
+	} else {
+		// log.Printf("Layout Elem[%d]: No children in RenderElement tree to layout.", el.OriginalIndex)
+	}
+	// log.Printf("Layout Elem[%d]: After children layout/content hugging: RenderW=%.1f, RenderH=%.1f", el.OriginalIndex, el.RenderW, el.RenderH)
+
+	// --- Step 7: Apply Min-Width/Height Constraints from direct properties ---
+	if doc != nil && el.OriginalIndex < len(doc.Properties) && len(doc.Properties[el.OriginalIndex]) > 0 {
+		elementDirectProps := doc.Properties[el.OriginalIndex]
+		// MinWidth
+		minWVal, minWType, _, minWErr := getNumericValueForSizeProp(elementDirectProps, krb.PropIDMinWidth, doc)
+		if minWErr == nil {
+			minWidthConstraint := MuxFloat32(minWType == krb.ValTypePercentage, (minWVal/256.0)*parentContentW, minWVal*scale)
+			if el.RenderW < minWidthConstraint {
+				// log.Printf("Layout Elem[%d]: Applying MinWidth constraint. %.1f -> %.1f", el.OriginalIndex, el.RenderW, minWidthConstraint)
+				el.RenderW = minWidthConstraint
+			}
+		}
+		// MinHeight
+		minHVal, minHType, _, minHErr := getNumericValueForSizeProp(elementDirectProps, krb.PropIDMinHeight, doc)
+		if minHErr == nil {
+			minHeightConstraint := MuxFloat32(minHType == krb.ValTypePercentage, (minHVal/256.0)*parentContentH, minHVal*scale)
+			if el.RenderH < minHeightConstraint {
+				// log.Printf("Layout Elem[%d]: Applying MinHeight constraint. %.1f -> %.1f", el.OriginalIndex, el.RenderH, minHeightConstraint)
+				el.RenderH = minHeightConstraint
+			}
+		}
+	}
+
+	// --- Step 8: Final Fallback for Zero Height (Ensuring Visibility for Styled Empty Containers) ---
+	el.RenderW = MaxF(0, el.RenderW) // Ensure width is not negative
+
+	if el.RenderW > 0 && el.RenderH == 0 {
+		if el.Header.Type == krb.ElemTypeContainer || el.Header.Type == krb.ElemTypeApp || el.BgColor.A > 0 {
+			defaultMinVisibleHeight := ScaledF32(uint8(baseFontSize), scale) // e.g., base font size as min height
+			
+			// Min height should also accommodate borders and padding
+			minHeightFromPaddingBorder := scaledBorderTop + scaledBorderBottom + scaledPaddingTop + scaledPaddingBottom
+			finalMinHeight := MaxF(defaultMinVisibleHeight, minHeightFromPaddingBorder)
+
+			if finalMinHeight == 0 && el.BgColor.A > 0 { // If still zero but has BG, give it 1 scaled pixel
+				finalMinHeight = 1.0 * scale
+			}
+			if finalMinHeight == 0 && (el.BorderWidths[0]+el.BorderWidths[1]+el.BorderWidths[2]+el.BorderWidths[3] > 0) { // has borders
+				finalMinHeight = 1.0 * scale
+			}
+
+
+			if finalMinHeight > 0 {
+				// log.Printf("Layout Elem[%d]: RenderH was 0 with W>0. Setting to fallback min visible height: %.1f", el.OriginalIndex, finalMinHeight)
+				el.RenderH = finalMinHeight
+			}
+		}
+	}
+	el.RenderH = MaxF(0, el.RenderH) // Ensure height is not negative
+
+	// log.Printf("Layout Elem[%d] Name='%s': FINAL RenderRect=(X:%.1f, Y:%.1f, W:%.1f x H:%.1f)",
+	// 	el.OriginalIndex, elementIdentifier, el.RenderX, el.RenderY, el.RenderW, el.RenderH)
+	// log.Printf("--- Layout End for Elem[%d] Name='%s' ---", el.OriginalIndex, elementIdentifier)
+}
+
+
+// PerformLayoutChildren arranges the children of a parent element.
+func PerformLayoutChildren(
+	parent *render.RenderElement,
+	parentClientOriginX, parentClientOriginY, // Top-left of the content area available for flow children
+	availableClientWidth, availableClientHeight float32, // Size of the content area for flow children
+	scale float32,
+	doc *krb.Document,
+) {
+	if parent == nil || len(parent.Children) == 0 {
+		return
+	}
+
+	flowChildren := make([]*render.RenderElement, 0, len(parent.Children))
+	absoluteChildren := make([]*render.RenderElement, 0)
+
+	// Separate children into flow and absolutely positioned
+	for _, child := range parent.Children {
+		if child != nil {
+			if child.Header.LayoutAbsolute() {
+				absoluteChildren = append(absoluteChildren, child)
+			} else {
+				flowChildren = append(flowChildren, child)
+			}
+		}
+	}
+
+	// Layout Flow Children
+	if len(flowChildren) > 0 {
+		layoutDirection := parent.Header.LayoutDirection() // e.g., krb.LayoutDirRow, krb.LayoutDirColumn
+		layoutAlignment := parent.Header.LayoutAlignment() // e.g., krb.LayoutAlignStart, krb.LayoutAlignCenter
+		isLayoutReversed := (layoutDirection == krb.LayoutDirRowReverse || layoutDirection == krb.LayoutDirColumnReverse)
+		isMainAxisHorizontal := (layoutDirection == krb.LayoutDirRow || layoutDirection == krb.LayoutDirRowReverse)
+
+		// Gap property (from style or direct)
+		gapValue := float32(0)
+		if parentStyle, styleFound := findStyle(doc, parent.Header.StyleID); styleFound { // findStyle should be available
+			if gapProp, propFound := getStylePropertyValue(parentStyle, krb.PropIDGap); propFound { // getStylePropertyValue should be available
+				if gVal, valOk := getShortValue(gapProp); valOk { // getShortValue should be available
+					gapValue = float32(gVal) * scale
+				}
+			}
+		}
+		// Direct property overrides style for gap
+		if doc != nil && parent.OriginalIndex < len(doc.Properties) && len(doc.Properties[parent.OriginalIndex]) > 0 {
+			for _, prop := range doc.Properties[parent.OriginalIndex] {
+				if prop.ID == krb.PropIDGap {
+					if gVal, valOk := getShortValue(&prop); valOk {
+						gapValue = float32(gVal) * scale
+						break
+					}
+				}
+			}
+		}
+
+		totalGapSpace := float32(0)
+		if len(flowChildren) > 1 {
+			totalGapSpace = gapValue * float32(len(flowChildren)-1)
+		}
+
+		mainAxisEffectiveSpaceForElements := MaxF(0, MuxFloat32(isMainAxisHorizontal, availableClientWidth, availableClientHeight)-totalGapSpace)
+		crossAxisEffectiveSizeForElements := MuxFloat32(isMainAxisHorizontal, availableClientHeight, availableClientWidth)
+
+		totalFixedSizeOnMainAxis := float32(0)
+		numberOfGrowChildren := 0
+
+		// First pass on flow children: calculate their desired sizes without 'grow'
+		// PerformLayout is called for each child. It will use its explicit header W/H,
+		// or properties like MaxWidth/MaxHeight, or default to the parent's available space (availableClientWidth/Height here).
+		for _, child := range flowChildren {
+			// Children are laid out relative to the parentClientOriginX/Y initially.
+			// Their final positions will be adjusted later based on flow logic.
+			// The parentContentW/H passed here is the available space for this child before considering other flow children.
+			PerformLayout(child, parentClientOriginX, parentClientOriginY, availableClientWidth, availableClientHeight, scale, doc) // Uppercase P
+			if child.Header.LayoutGrow() {
+				numberOfGrowChildren++
+			} else {
+				totalFixedSizeOnMainAxis += MuxFloat32(isMainAxisHorizontal, child.RenderW, child.RenderH)
+			}
+		}
+		totalFixedSizeOnMainAxis = MaxF(0, totalFixedSizeOnMainAxis)
+
+		spaceAvailableForGrowingChildren := MaxF(0, mainAxisEffectiveSpaceForElements-totalFixedSizeOnMainAxis)
+		sizePerGrowChild := float32(0)
+		if numberOfGrowChildren > 0 && spaceAvailableForGrowingChildren > 0 {
+			sizePerGrowChild = spaceAvailableForGrowingChildren / float32(numberOfGrowChildren)
+		}
+
+		// Second pass on flow children: apply 'grow' and constrain cross-axis
+		totalFinalElementSizeOnMainAxis := float32(0)
+		for _, child := range flowChildren {
+			childCrossAxisAvailableSize := crossAxisEffectiveSizeForElements
+			if child.Header.LayoutGrow() && sizePerGrowChild > 0 {
+				if isMainAxisHorizontal {
+					child.RenderW = sizePerGrowChild
+					// If child doesn't have explicit height, or if its height allows, make it fill cross axis.
+					// This depends on how "stretch" on cross-axis is handled.
+					// For now, if it grows on main, let its cross-axis be what PerformLayout decided,
+					// unless that exceeds childCrossAxisAvailableSize.
+					if child.RenderH == 0 || child.RenderH > childCrossAxisAvailableSize {
+                         child.RenderH = childCrossAxisAvailableSize
+                    }
+				} else { // Main axis is vertical
+					child.RenderH = sizePerGrowChild
+					if child.RenderW == 0 || child.RenderW > childCrossAxisAvailableSize {
+                        child.RenderW = childCrossAxisAvailableSize
+                    }
+				}
+			} else { // Not growing or no space to grow
+				// Constrain to cross-axis size if it's larger and cross-axis size is positive
+				if isMainAxisHorizontal {
+					if child.RenderH > childCrossAxisAvailableSize && childCrossAxisAvailableSize > 0 {
+						child.RenderH = childCrossAxisAvailableSize
+					}
+				} else { // Main axis is vertical
+					if child.RenderW > childCrossAxisAvailableSize && childCrossAxisAvailableSize > 0 {
+						child.RenderW = childCrossAxisAvailableSize
+					}
+				}
+			}
+			child.RenderW = MaxF(0, child.RenderW) // Ensure non-negative
+			child.RenderH = MaxF(0, child.RenderH)
+			totalFinalElementSizeOnMainAxis += MuxFloat32(isMainAxisHorizontal, child.RenderW, child.RenderH)
+		}
+
+		// Calculate alignment offsets and spacing
+		totalUsedSpaceWithGaps := totalFinalElementSizeOnMainAxis + totalGapSpace
+		startOffsetOnMainAxis, effectiveSpacingBetweenItems := calculateAlignmentOffsetsF(layoutAlignment,
+			MuxFloat32(isMainAxisHorizontal, availableClientWidth, availableClientHeight), totalUsedSpaceWithGaps,
+			len(flowChildren), isLayoutReversed, gapValue) // calculateAlignmentOffsetsF should be available
+
+		// Third pass: Position flow children
+		currentMainAxisPosition := startOffsetOnMainAxis
+		childOrderIndices := make([]int, len(flowChildren))
+		for i := range childOrderIndices {
+			childOrderIndices[i] = i
+		}
+		if isLayoutReversed {
+			ReverseSliceInt(childOrderIndices) // ReverseSliceInt should be available
+		}
+
+		for i, orderedChildIndex := range childOrderIndices {
+			child := flowChildren[orderedChildIndex]
+			childMainAxisSizeValue := MuxFloat32(isMainAxisHorizontal, child.RenderW, child.RenderH)
+			childCrossAxisSizeValue := MuxFloat32(isMainAxisHorizontal, child.RenderH, child.RenderW)
+
+			// Calculate cross-axis offset
+			// This uses the parent's layoutAlignment for the cross-axis.
+			// A more complete system might have separate cross-axis alignment properties.
+			crossAxisOffset := calculateCrossAxisOffsetF(layoutAlignment, crossAxisEffectiveSizeForElements, childCrossAxisSizeValue) // NEW - CORRECT
+
+			if isMainAxisHorizontal {
+				child.RenderX = parentClientOriginX + currentMainAxisPosition
+				child.RenderY = parentClientOriginY + crossAxisOffset
+			} else { // Main axis is vertical
+				child.RenderX = parentClientOriginX + crossAxisOffset
+				child.RenderY = parentClientOriginY + currentMainAxisPosition
+			}
+
+			currentMainAxisPosition += childMainAxisSizeValue
+			if i < len(flowChildren)-1 { // Add spacing if not the last item
+				currentMainAxisPosition += effectiveSpacingBetweenItems
+			}
+		}
+	}
+
+	// Layout Absolutely Positioned Children
+	if len(absoluteChildren) > 0 {
+		for _, child := range absoluteChildren {
+			// Absolute children are laid out relative to the parent's origin (parent.RenderX/Y),
+			// not the client area origin. Their percentage sizes (if any)
+			// are calculated based on the parent's overall dimensions (parent.RenderW/H).
+			PerformLayout(child, parent.RenderX, parent.RenderY, parent.RenderW, parent.RenderH, scale, doc) // Uppercase P
+		}
+	}
+}
+
+
+// --- Helper function stubs (ensure these are defined and exported if needed, or kept lowercase if internal) ---
+
+// getNumericValueForSizeProp: if only used by PerformLayout, can be lowercase.
+// Otherwise, make it GetNumericValueForSizeProp.
+func getNumericValueForSizeProp(props []krb.Property, propID krb.PropertyID, doc *krb.Document) (value float32, valueType krb.ValueType, rawSizeBytes uint8, err error) {
+	for _, p := range props {
+		if p.ID == propID {
+			// Assuming getNumericValueFromKrbProp is also defined, possibly lowercase if internal
+			return getNumericValueFromKrbProp(&p, doc)
+		}
+	}
+	return 0, krb.ValTypeNone, 0, fmt.Errorf("property ID 0x%X not found in list", propID)
+}
+
+// getNumericValueFromKrbProp: internal helper for the above, can be lowercase.
+func getNumericValueFromKrbProp(prop *krb.Property, doc *krb.Document) (value float32, valueType krb.ValueType, rawSizeBytes uint8, err error) {
+	if prop == nil {
+		return 0, krb.ValTypeNone, 0, fmt.Errorf("getNumericValueFromKrbProp: received nil property")
+	}
+	if prop.ValueType == krb.ValTypeShort && len(prop.Value) == 2 {
+		return float32(binary.LittleEndian.Uint16(prop.Value)), krb.ValTypeShort, 2, nil
+	}
+	if prop.ValueType == krb.ValTypePercentage && len(prop.Value) == 2 {
+		// Value is 8.8 fixed point, stored as uint16.
+		// The raw uint16 value is what's returned here (e.g., 256 for 100%).
+		// The caller (e.g., getNumericValueForSizeProp) then interprets it as (val/256.0)*parentMeasure.
+		return float32(binary.LittleEndian.Uint16(prop.Value)), krb.ValTypePercentage, 2, nil
+	}
+	// Add other types if needed e.g. ValTypeByte for fixed pixel values
+	// if prop.ValueType == krb.ValTypeByte && len(prop.Value) == 1 {
+	// return float32(prop.Value[0]), krb.ValTypeByte, 1, nil
+	// }
+	return 0, prop.ValueType, prop.Size, fmt.Errorf("unsupported KRB ValueType (%d) or Size (%d) for numeric size conversion (PropID: %X)", prop.ValueType, prop.Size, prop.ID)
+}
+
+
 // GetRenderTree returns a slice of pointers to all processed RenderElements.
 func (r *RaylibRenderer) GetRenderTree() []*render.RenderElement {
 	if len(r.elements) == 0 {
@@ -768,7 +1286,7 @@ func (r *RaylibRenderer) PollEvents() {
 
 		if isMouseHovering && isMouseButtonClicked && !clickHandledThisFrame {
 			eventWasProcessedByCustomHandler := false
-			componentID, isCustomInstance := getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
+			componentID, isCustomInstance := GetCustomPropertyValue(el, componentNameConventionKey, r.docRef)
 
 			if isCustomInstance && componentID != "" {
 				if customHandler, handlerExists := r.customHandlers[componentID]; handlerExists {
@@ -897,7 +1415,7 @@ func (r *RaylibRenderer) ApplyCustomComponentLayoutAdjustments(elements []*rende
 		if el == nil {
 			continue
 		}
-		componentIdentifier, found := getCustomPropertyValue(el, componentNameConventionKey, doc)
+		componentIdentifier, found := GetCustomPropertyValue(el, componentNameConventionKey, doc)
 		if found && componentIdentifier != "" {
 			handler, handlerFound := r.customHandlers[componentIdentifier]
 			if handlerFound {
@@ -923,7 +1441,7 @@ func (r *RaylibRenderer) renderElementRecursiveWithCustomDraw(el *render.RenderE
 	foundName := false
 
 	if r.docRef != nil {
-		componentIdentifier, foundName = getCustomPropertyValue(el, componentNameConventionKey, r.docRef)
+		componentIdentifier, foundName = GetCustomPropertyValue(el, componentNameConventionKey, r.docRef)
 	}
 
 	if foundName && componentIdentifier != "" {
@@ -1347,6 +1865,101 @@ func applyDirectPropertiesToConfig(props []krb.Property, doc *krb.Document, conf
 	}
 }
 
+// calculateAlignmentOffsetsF calculates the starting offset and the effective spacing
+// between items for flow layouts based on the alignment mode.
+// - alignment: Main axis alignment (e.g., krb.LayoutAlignStart, krb.LayoutAlignCenter).
+// - availableSpaceOnMainAxis: Total space available for elements and gaps.
+// - totalUsedSpaceByChildrenAndGaps: Sum of all children's sizes on the main axis plus all fixed gaps.
+// - numberOfChildren: Number of flow children being laid out.
+// - isLayoutReversed: True if the layout direction is reversed (e.g., RowReverse).
+// - fixedGapBetweenChildren: The base gap value between items.
+
+func calculateAlignmentOffsetsF(
+	alignment uint8,
+	availableSpaceOnMainAxis float32,
+	totalUsedSpaceByChildrenAndGaps float32,
+	numberOfChildren int,
+	isLayoutReversed bool,
+	fixedGapBetweenChildren float32,
+) (startOffset float32, spacingToApplyBetweenChildren float32) {
+
+	unusedSpace := MaxF(0, availableSpaceOnMainAxis-totalUsedSpaceByChildrenAndGaps)
+	startOffset = 0.0
+	spacingToApplyBetweenChildren = fixedGapBetweenChildren 
+
+	switch alignment {
+	case krb.LayoutAlignStart: 
+		if isLayoutReversed {
+			startOffset = unusedSpace 
+		} else {
+			startOffset = 0 
+		}
+	case krb.LayoutAlignCenter: 
+		startOffset = unusedSpace / 2.0
+	case krb.LayoutAlignEnd: 
+		if isLayoutReversed {
+			startOffset = 0 
+		} else {
+			startOffset = unusedSpace 
+		}
+	case krb.LayoutAlignSpaceBetween:
+		if numberOfChildren > 1 {
+			spacingToApplyBetweenChildren += unusedSpace / float32(numberOfChildren-1)
+		} else {
+			startOffset = unusedSpace / 2.0
+		}
+	// REMOVED krb.LayoutAlignSpaceAround and krb.LayoutAlignSpaceEvenly cases
+	default: 
+		// Log if an unexpected alignment value is encountered, but still provide a default behavior.
+		if alignment != krb.LayoutAlignStart && alignment != krb.LayoutAlignCenter && alignment != krb.LayoutAlignEnd && alignment != krb.LayoutAlignSpaceBetween {
+			log.Printf("Warn calculateAlignmentOffsetsF: Unknown or non-standard alignment value %d. Defaulting to LayoutAlignStart behavior.", alignment)
+		}
+		// Default to LayoutAlignStart behavior
+		if isLayoutReversed {
+			startOffset = unusedSpace
+		} else {
+			startOffset = 0
+		}
+	}
+	return startOffset, spacingToApplyBetweenChildren
+}
+
+// calculateCrossAxisOffsetF calculates the offset for a child on the cross-axis
+// based on the parent's cross-axis alignment and the child's size.
+// - alignment: Cross-axis alignment (e.g., krb.LayoutAlignStart, krb.LayoutAlignCenter).
+//              This uses the same enum as main-axis alignment for simplicity here.
+// - parentCrossAxisSize: The total available size on the cross axis in the parent.
+// - childCrossAxisSize: The size of the child element on the cross axis.
+func calculateCrossAxisOffsetF(
+	alignment uint8, 
+	parentCrossAxisSize float32,
+	childCrossAxisSize float32,
+) float32 {
+	offset := float32(0.0)
+	availableSpace := parentCrossAxisSize - childCrossAxisSize
+
+	switch alignment {
+	case krb.LayoutAlignStart: // Align to the start of the cross axis (top/left)
+		offset = 0.0
+	case krb.LayoutAlignCenter: // Center on the cross axis
+		if availableSpace > 0 {
+			offset = availableSpace / 2.0
+		}
+	case krb.LayoutAlignEnd: // Align to the end of the cross axis (bottom/right)
+		if availableSpace > 0 {
+			offset = availableSpace
+		}
+	// krb.LayoutAlignSpaceBetween and similar are typically for main axis distribution,
+	// for cross-axis, 'stretch' is a common behavior if child has no fixed size.
+	// This function assumes child has a determined cross-axis size.
+	// 'Stretch' would typically be handled by PerformLayout setting child's cross-axis size to parentCrossAxisSize.
+	default: // Default to start alignment on cross-axis
+		offset = 0.0
+	}
+	return MaxF(0, offset) // Ensure offset is not negative
+}
+
+
 func resolveElementText(doc *krb.Document, el *render.RenderElement, style *krb.Style, styleOk bool) {
 	if el.Header.Type != krb.ElemTypeText && el.Header.Type != krb.ElemTypeButton {
 		return
@@ -1449,6 +2062,7 @@ func resolveEventHandlers(doc *krb.Document, el *render.RenderElement) {
 		}
 	}
 }
+
 
 func findStyle(doc *krb.Document, styleID uint8) (*krb.Style, bool) {
 	if doc == nil || styleID == 0 || int(styleID) > len(doc.Styles) { // StyleID is 1-based
@@ -1630,4 +2244,49 @@ func ReverseSliceInt(s []int) {
 	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
 		s[i], s[j] = s[j], s[i]
 	}
+}
+
+// --- Math and Scaling Helpers ---
+func ScaledF32(value uint8, scale float32) float32 {
+	return float32(value) * scale
+}
+
+func scaledI32(value uint8, scale float32) int32 {
+	// Round to nearest integer for pixel values
+	return int32(math.Round(float64(value) * float64(scale)))
+}
+
+func MinF(a, b float32) float32 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func MaxF(a, b float32) float32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func MuxFloat32(cond bool, valTrue, valFalse float32) float32 {
+	if cond {
+		return valTrue
+	}
+	return valFalse
+}
+
+func maxI32(a, b int32) int32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxI(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

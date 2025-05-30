@@ -37,7 +37,7 @@ func (h *MarkdownViewHandler) HandleLayoutAdjustment(el *render.RenderElement, d
 	}
 
 	// 1. Get the 'source' custom property value (path string)
-	sourcePath, ok := getCustomPropertyValue(el, "source", doc)
+	sourcePath, ok := GetCustomPropertyValue(el, "source", doc)
 	if !ok {
 		log.Printf("WARN MarkdownHandler [%s]: Missing 'source' custom property. Cannot render content.", elIDStr)
 		addMarkdownPlaceholder(el, "Error: Missing 'source' property.")
