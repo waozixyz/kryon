@@ -21,14 +21,14 @@ Kryon consists of two distinct formats and typically a compiler:
     *   Files use the `.krb` extension.
     *   Optimized for parsing and rendering on resource-constrained systems.
 
-
-3.  **Kryon Compiler (`kryonc`)**:
+3.  **Kryon Compiler (`kryc`)**:
     *   Translates `.kry` source files into `.krb` binary files.
-    *   Expands `.kry` `Define` component usage into standard KRB elements.
+    *   Processes `.kry` `Define` blocks by serializing them into the `Component Definition Table` in the `.krb` file.
+    *   Translates `.kry` component usage (e.g., `<MyComponent>`) into a **single placeholder KRB element** in the main UI tree. This placeholder contains references and instance-specific properties.
     *   Maps standard `.kry` properties to standard KRB properties.
-    *   **Crucially, encodes component-specific properties (like `position` from a `TabBar`) declared in `.kry` `Properties` blocks into the KRB `Custom Properties` section for later interpretation.**
+    *   **Crucially, encodes component-specific properties (like `position` from a `TabBar`) declared in `.kry` `Properties` blocks, as well as a conventional identifier like `_componentName`, into the KRB `Custom Properties` section of the *placeholder element* for later runtime interpretation during component instantiation.**
 
-**Runtime Expectation:** Runtimes parsing `.krb` files must understand the standard elements and properties defined here. KRB v0.3 introduces an optional **Custom Properties** section within Element Blocks. This allows compilers to embed application-specific key-value data (like `position="bottom"` originating from a custom `.kry` component like `<TabBar>`) directly into the KRB. **Crucially, the interpretation and handling of these Custom Properties is the responsibility of the specific runtime environment.** Standard runtimes might ignore custom properties they don't recognize. Compiler expansion (`Define` in `.kry`) that resolves components entirely into standard elements *without* relying on runtime interpretation of custom properties remains the recommended approach for maximum portability, but this Custom Properties mechanism enables runtime-specific handling when required.
+**Runtime Expectation:** Runtimes parsing `.krb` files must understand the standard elements and properties defined here. KRB v0.3 introduced an optional **Custom Properties** section within Element Blocks. For `.kry` `Define`d components, the primary mechanism is runtime instantiation. The compiler writes component definitions to the `Component Definition Table`. Usages of these components in `.kry` become placeholder elements in the main KRB tree. These placeholders use `Custom Properties` (e.g., `_componentName` and instance-specific values for declared properties) to instruct the runtime on how to instantiate and configure the component from its definition. The interpretation and handling of these Custom Properties, and the instantiation process itself, are the responsibility of the specific runtime environment. Standard runtimes might ignore custom properties they don't recognize if they are not related to component instantiation or features they support.
 
 ## Design Goals
 *   **Universal Compatibility**: Works across diverse computing environments, including 8-bit systems.
@@ -79,7 +79,10 @@ Kryon consists of two distinct formats and typically a compiler:
     *   Bit 6: `FLAG_EXTENDED_COLOR` (4-byte RGBA vs 1-byte palette index)
     *   Bit 7: `FLAG_HAS_APP` (First element is `App`)
     *   Bit 8-15: Reserved
+
 ## 2. Element Blocks
+
+*(Note: The `Element Blocks` section describes the structure of elements found in the **main UI tree**. Elements that form the template of a component (within the `Component Definition Table`) also follow this structure but are interpreted in the context of that definition.)*
 
 Starts at `Element Offset` from the header. Contains `Element Count` blocks.
 
@@ -99,7 +102,7 @@ Starts at `Element Offset` from the header. Contains `Element Count` blocks.
 | 13     | 1    | Child Count           | Number of subsequent child references                      | `0x03` (3)          |
 | 14     | 1    | Event Count           | Number of subsequent event references                      | `0x01` (1)          |
 | 15     | 1    | Animation Count       | Number of subsequent animation references                  | `0x00` (0)          |
-| **16** | **1**| **Custom Prop Count** | **Number of *custom* key-value properties following standard props.** | **`0x01` (1)**      | 
+| 16 | 1| Custom Prop Count | Number of *custom* key-value properties following standard props. | `0x01` (1)      | 
 
 **Element Types** (`ELEM_TYPE_*`):
 *   **Core Elements** (0x00–0x0F): `0x00`:App, `0x01`:Container, `0x02`:Text, `0x03`:Image, `0x04`:Canvas, `0x05`–`0x0F`:Reserved
@@ -188,7 +191,11 @@ Follow the element header, `Property Count` entries.
 
 Follows the Standard Properties section. Contains `Custom Prop Count` entries. This section provides a structured way to embed key-value data directly in the KRB **for runtime interpretation**.
 
-**Purpose:** Allows custom components defined in `.kry` (e.g., using `Define`) to pass component-specific properties (like `position`, `orientation`, custom data bindings) through the compiler into the `.krb` file. The compiler translates these into key-value pairs here.
+**Purpose:**
+*   ... (existing text, if any) ...
+*   For placeholder elements representing component instances:
+    *   A conventional key (e.g., `_componentName`) whose value (a string index) identifies the component definition to be instantiated from the `Component Definition Table`. **This property is essential for runtime instantiation.**
+    *   Keys corresponding to component-specific properties declared in the `Define ComponentName { Properties {...} }` block, with values set by the KRY usage tag.
 
 **Runtime Responsibility:** The runtime environment is responsible for:
 1.  Checking for the presence of custom properties on elements it processes.
@@ -251,10 +258,11 @@ Starts at `Style Offset`. Contains `Style Count` blocks. Defines reusable sets o
 | 3        | Variable | Properties     | Standard Property definitions (ID, Type, Size, Value) |                   |
 
 
-
 ## 4. Component Definition Table
 
-Starts at `Component Def Offset` from the File Header. Contains `Component Def Count` entries. This section stores reusable component templates defined in `.kry` source files (e.g., via `Define ComponentName { ... }`). Runtimes can use these definitions to instantiate components dynamically.
+*(Note: This table stores templates for reusable components defined in `.kry` source files. Each entry allows the runtime to dynamically create instances of these components.)*
+
+Starts at `Component Def Offset` from the File Header. Contains `Component Def Count` entries.
 
 **Each Component Definition Entry:**
 
@@ -284,6 +292,7 @@ This structure describes properties declared in a component's `Properties { ... 
 *   The `Property Count` in the template's root element header refers to its *standard* properties.
 *   The `Custom Prop Count` in the template's root element header should typically be 0.
 *   The `Event Count` in the template's root element header should typically be 0.
+*   **Instance Children Slot (Convention):** A component template *may* define a specific child element within its structure (e.g., a `Container` with a conventional `id` like `"instance_children_slot"` or `"content_host"`) intended to receive children passed to an instance of this component (i.e., children of the placeholder element in the main KRB tree). The runtime is responsible for looking for such a conventionally named slot during instantiation and re-parenting the instance's children into it. If no such slot is defined in the template or found by the runtime, the runtime might append instance children directly to the instantiated component's root, or its behavior might be component-specific or an error.
 
 ---
 
@@ -351,6 +360,34 @@ For each resource entry:
 **Resource Formats** (`RES_FORMAT_*`):
 *   `0x00` (External): `Data` is **1 byte**: the String Table index (0-based) of the resource path/URL. Total entry size: 4 bytes.
 *   `0x01` (Inline): `Data` is **`[Size (2 bytes, little-endian)] [Raw Bytes (Variable)]`**. Total entry size: 3 + Size + Raw Bytes length.
+
+## 8. Runtime Interpretation: Component Instantiation (New Section)
+
+When the runtime parses a `.krb` file that utilizes component definitions, the following process is expected for instantiating components found in the main UI tree:
+
+1.  **Identify Placeholder:** As the runtime processes elements from the `Element Blocks` section (main UI tree), it identifies elements that are placeholders for component instances. This is typically done by checking for a conventional custom property, such as one with the key `_componentName`. The `Type` of this placeholder element often matches the root element type of the component's definition template.
+
+2.  **Lookup Definition:** The runtime uses the value of the `_componentName` custom property (which is a string table index for the component's defined name) to find the corresponding entry in its parsed `Component Definition Table`. If no definition is found, this is a critical error.
+
+3.  **Create Instance Subtree:** A new element subtree is created in the runtime's internal render tree, based on the `Root Element Template` provided in the found component definition. This involves recursively creating elements as defined in the template.
+
+4.  **Apply Placeholder Properties to Instance Root:**
+    *   Standard header fields from the placeholder KRB element (e.g., `ID` from KRY usage, `PosX`, `PosY`, `Width`, `Height`, `Layout` byte, `StyleID`) are applied to the *root element* of the newly instantiated subtree. These instance-specific values override any defaults set within the template's root element.
+    *   Standard `KrbProperty` entries from the *placeholder KRB element* are also applied to the root of the instantiated subtree, potentially overriding defaults from the template's root element.
+
+5.  **Process Instance Custom Properties:** Other `Custom Properties` found on the placeholder element (which represent instance-specific values for the component's declared, non-standard properties) are processed by the runtime. This typically involves the runtime using these key-value pairs to:
+    *   Configure the behavior of the instantiated component.
+    *   Set internal state.
+    *   Further style or layout internal elements of the component based on these custom values.
+
+6.  **Handle Instance Children:**
+    *   If the placeholder KRB element has a `Child Count > 0` and associated child element blocks, these children (which were provided in the KRY usage tag) are taken by the runtime.
+    *   These "instance children" are then re-parented into the newly instantiated component's subtree. This typically involves the runtime looking for a designated "slot" or "content host" element within the instantiated component's structure (based on a conventional `id` within the template, e.g., `id="children_host"`).
+    *   If such a slot is found, the instance children become children of that slot. If not, the runtime's behavior for placing these children may vary (e.g., append to instance root, error, or ignore).
+
+7.  **Replace Placeholder:** In the runtime's final, active render tree, the original placeholder element is conceptually replaced by this fully instantiated and configured component subtree.
+
+This process allows `.kry` files to define complex UIs using reusable components, with the `.krb` file containing both the definitions and the lightweight references for instantiation by the runtime.
 
 ## Stack-Based Considerations & Optimizations
 

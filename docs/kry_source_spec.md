@@ -18,31 +18,133 @@ This document specifies version 1.0 of the `.kry` language.
 
 *   **Encoding:** UTF-8.
 *   **Comments:** Lines starting with `#` are ignored.
-*   **Whitespace:** Indentation and extra whitespace are generally ignored, but recommended for readability. Braces `{}` define blocks.
+*   **Whitespace:** Indentation and extra whitespace are generally ignored for parsing purposes but are strongly recommended for readability. Braces `{}` define blocks for elements, styles, and other language constructs.
 *   **Case Sensitivity:** Keywords (`App`, `Container`, `style`, `Define`, etc.) are typically case-sensitive (convention: PascalCase for elements/definitions, camelCase or snake_case for properties). String values are case-sensitive.
 
 A typical `.kry` file consists of:
 *   Optional `@include` directives.
+*   Optional `@variables` definitions.
 *   Optional `style` definitions.
 *   Optional `Define` blocks for custom components.
 *   A single root `App` element definition (usually required for a runnable UI).
 
+## 3.1. Variables (`@variables`)
+
+A `@variables` block allows the definition of named constants that can be reused throughout the `.kry` file and included files. This is primarily for values like theme colors, standard spacing, font sizes, etc. Variables are resolved at compile time.
+
+*   **Syntax:**
+    ```kry
+    @variables {
+        variableName1: value
+        another_variable: value
+        # Colors
+        theme_primary_color: "#007BFFFF"
+        theme_text_color: "#333333FF"
+        # Sizes
+        standard_padding: 16
+        button_height: 40
+        # Strings
+        default_placeholder: "Enter text..."
+    }
+    ```
+*   **Scope:** Variables defined in a `@variables` block are globally available after their definition point within the current compilation unit (i.e., the main file and all textually included content). If multiple `@variables` blocks are encountered (e.g., through includes), their definitions are merged. If a variable name is redefined, the later definition takes precedence. The compiler should warn about redefinitions.
+*   **Value Types:** Variable values can be any of the standard KRY property value types: Strings, Numbers (Integers, Floats), Hex Colors, Booleans. They cannot be Enums, Resource Paths, Style Names, or Callback Names directly as variable values (these are resolved differently by the compiler based on context).
+*   **Usage:** To use a variable, prefix its name with a `$` (dollar sign) where a value is expected.
+    ```kry
+    style "my_button_style" {
+        background_color: $theme_primary_color
+        padding: $standard_padding
+        height: $button_height
+    }
+
+    Text {
+        text_color: $theme_text_color
+        text: $default_placeholder
+    }
+    ```
+*   **Resolution:** The compiler replaces variable usages (e.g., `$theme_primary_color`) with their literal defined values *before* further property parsing or type checking. This substitution is textual.
+    *   If a variable `$varName` is used but not defined, the compiler **must** report an error.
+    *   Recursive variable definitions (e.g., `varA: $varB`, `varB: $varA`) **must** be detected and reported as an error by the compiler during the variable resolution phase.
+*   **KRB Mapping:** Variables are purely a compile-time construct. They do not exist in the `.krb` file. Their substituted literal values are processed as if they were written directly into the KRY source.
+
 ## 4. Core Elements
 
-Standard UI building blocks. Elements are defined using `ElementName { ... }`. These correspond directly to standard `ELEM_TYPE_*` values in the KRB specification.
+Standard UI building blocks. Elements are defined using `ElementName { ... }` or `ElementName { property1: value1; property2: value2; ... }` for single-line definitions with properties. These correspond directly to standard `ELEM_TYPE_*` values in the KRB specification.
+
+*   **Syntax for Element Definition:**
+    1.  **Block Form (Multi-line):**
+        ```kry
+        ElementName {
+            # Properties on separate lines
+            propertyName1: value1
+            propertyName2: value2
+            # Child elements
+            ChildElement1 { ... }
+            ChildElement2 { ... }
+        }
+        ```
+    2.  **Single-Line Form (with Properties, No Children on Same Line):**
+        For elements that primarily consist of properties and have no child elements *defined on the same line*, a single-line form is allowed. The closing brace `}` terminates the element's property definitions for that line.
+        ```kry
+        ElementName { propertyNameA: valueA; propertyNameB: valueB; propertyNameC: "value C" }
+        ```
+        *   Properties are separated by semicolons (`;`).
+        *   The closing brace `}` terminates the property definitions for this element on this line.
+        *   This form is typically used for leaf nodes. If children are intended, they must be defined within an explicit block.
+
+    3.  **Single-Line Properties with Explicit Child Block:**
+        An element can define properties on its declaration line, and if it has children, those children **must** be enclosed in a subsequent explicit block defined by `{}`.
+        ```kry
+        Container { layout: row; padding: 10; } { # Properties end with ';', then explicit block for children
+            Text { text: "Item 1" }
+            Text { text: "Item 2" }
+        }
+
+        # Example of single-line properties for an element that then contains children in a new block:
+        Button { text: "Submit"; style: "primary" } {
+            Image { source: "icons/submit.png"; width: 16; height: 16 }
+        }
+        ```
+        *   The properties on the first line are parsed up to the closing brace `}` or the opening brace `{` of the child block.
+        *   The child elements are then parsed within their own standard block structure.
+        *   It is invalid to have children follow a single-line property definition without an explicit block structure for those children.
+            ```kry
+            # INVALID: Implicit child block after single-line properties
+            # Container { layout: row; padding: 10 }
+            #     Text { text: "Item 1" }
+            ```
 
 *   **`App`**: The root element defining application-level properties (window size, title, etc.). Must be the top-level element describing the runnable UI. Maps to `ELEM_TYPE_APP`.
 *   **`Container`**: A generic element for grouping other elements and controlling layout. Maps to `ELEM_TYPE_CONTAINER`.
 *   **`Text`**: Displays text content. Maps to `ELEM_TYPE_TEXT`.
 *   **`Image`**: Displays an image resource. Maps to `ELEM_TYPE_IMAGE`.
+    *   *Example of single-line form (no children):*
+        ```kry
+        Image { source: "assets/icons/edit.png"; width: 24; height: 24 }
+        Image { source: $icon_path; width: $icon_size; height: $icon_size }
+        ```
 *   **`Button`**: An interactive element that triggers an action on click. Maps to `ELEM_TYPE_BUTTON`.
 *   **`Input`**: Allows user text input. Maps to `ELEM_TYPE_INPUT`.
 *   *(Other elements like `Canvas`, `List`, `Grid`, `Scrollable`, `Video` can be defined, corresponding to standard `ELEM_TYPE_*` in KRB)*
 
 ## 5. Properties
 
-Properties modify the appearance or behavior of an element. They are specified within the element's block as `propertyName: value`. These generally map to standard KRB properties or are handled as described in Section 8 (Component Definition).
-*   **Syntax:** `propertyName: value`
+Properties modify the appearance or behavior of an element. They are specified within the element's block or on the same line as the element declaration. These generally map to standard KRB properties or are handled as described in Section 8 (Component Definition).
+
+*   **Syntax:**
+    *   **Standard (Multi-line):** `propertyName: value` on its own line within an element's `{ ... }` block.
+        ```kry
+        Container {
+            width: 100
+            height: 50
+        }
+        ```
+    *   **Single-Line (within Element Declaration):** `propertyName: value` pairs separated by semicolons (`;`) on the same line as the `ElementName { ... }`.
+        ```kry
+        Text { text: "Hello"; text_color: $theme_text_color; font_size: 16 }
+        ```
+        *   The last property on the line does not require a trailing semicolon before the closing brace `}` if the line ends the element definition.
+        *   Whitespace around the colon `:` and semicolon `;` is flexible but recommended for readability.
 *   **Values:**
     *   **Strings:** Enclosed in double quotes (`"Hello"`).
     *   **Numbers (Integers and Floating-Point for Percentages):**
@@ -61,6 +163,10 @@ Properties modify the appearance or behavior of an element. They are specified w
     *   **Resource Paths:** Strings referencing external files (`"images/logo.png"`).
     *   **Style Names:** Strings referencing a defined style (`"my_button_style"`). For `Define`d component properties, see Section 8.
     *   **Callback Names:** Strings referencing runtime functions (`"handleButtonClick"`).
+    *   **Variables:** A variable reference (e.g., `$my_variable_name`) can be used as a value. The compiler first substitutes it with its defined literal value, which is then parsed according to the expected type for `propertyName`.
+        ```kry
+        Button { text: $button_label_confirm; height: $button_height; style: "primary_button" }
+        ```
 
 *   **Standard Properties:** (Examples - Correspond to KRB `PROP_ID_*`)
     *   `id`: String identifier for referencing the element. Passed to KRB Element Header `ID` field (as string index).
@@ -86,8 +192,10 @@ Reusable blocks of properties that can be applied to elements. Styles enhance mo
 *   **Syntax:**
     ```kry
     style "style_name" {
-        # Optional: Inherit properties from a base style
-        extends: "base_style_name"
+        # Optional: Inherit properties from one or more base styles
+        extends: "base_style_name_single" 
+        # OR
+        extends: ["base_style_1", "base_style_2", ..., "base_style_N"]
 
         # Properties defined in this block
         propertyName: value
@@ -96,38 +204,48 @@ Reusable blocks of properties that can be applied to elements. Styles enhance mo
     }
     ```
 *   **Inheritance (`extends`):**
-    *   A style definition can optionally include **one** `extends: "base_style_name"` property as its **first** property (conventionally).
-    *   The `base_style_name` must refer to another style defined elsewhere (or included).
-    *   The compiler will first copy all properties from the `base_style_name`.
-    *   Then, any properties defined directly within the current `style "style_name"` block will be applied, **overriding** any properties with the same name inherited from the base style.
+    *   A style definition can optionally include an `extends` property as its **first** property (conventionally).
+    *   The value for `extends` can be either:
+        1.  A single **quoted string** representing one base style name (e.g., `extends: "base_style"`).
+        2.  An **array of quoted strings** representing multiple base style names (e.g., `extends: ["base1", "base2"]`).
+    *   Each `base_style_name` in the string or array must refer to another style defined elsewhere (or included).
+    *   **Resolution for Multiple Base Styles:**
+        *   The compiler will process the base styles in the order they are listed in the `extends` array.
+        *   Properties from later base styles in the array will **override** properties from earlier base styles if there are conflicts. For example, in `extends: ["A", "B"]`, if both `A` and `B` define `color`, `B`'s `color` will be used as the inherited value.
+    *   **Final Override:** Any properties defined directly within the current `style "style_name"` block will be applied last, **overriding** any properties with the same name inherited from any of the base styles.
     *   Inheritance can be chained (e.g., Style C extends Style B, which extends Style A).
     *   The compiler **must** detect and report errors for:
-        *   Undefined `base_style_name`.
-        *   Cyclic dependencies (e.g., Style A extends Style B, and Style B extends Style A).
+        *   Undefined `base_style_name`(s).
+        *   Cyclic dependencies (e.g., Style A extends Style B, and Style B extends Style A, or more complex cycles involving multiple styles).
+        *   Invalid syntax for the `extends` value (e.g., not a string or an array of strings).
 *   **Usage:** Applied to an element using the `style: "style_name"` property. Properties defined directly on the element override those from the applied style (including any inherited properties).
 *   **KRB Mapping:** Style inheritance is resolved entirely by the **compiler**. The final `.krb` file contains `Style Blocks` with the fully resolved set of *standard* properties for each style ID. The runtime does not need to know about the `extends` relationship. Styles define *standard* KRB properties.
 
-*   **Example:**
+*   **Example (Single Inheritance):**
     ```kry
-    # Base button style
-    style "button_base" {
-        background_color: #555555FF
-        text_color: #EEEEEEFF
-        border_width: 1
-        border_color: #333333FF
-    }
+    style "button_base" { /* ... */ }
+    style "button_primary" { extends: "button_base"; background_color: blue; }
+    ```
 
-    # Primary button inherits from base and overrides colors
-    style "button_primary" {
-        extends: "button_base" # Inherit properties first
-        background_color: #007BFFFF # Override base
-        text_color: #FFFFFFFF     # Override base
-        border_color: #0056B3FF # Override base
+*   **Example (Multiple Inheritance):**
+    ```kry
+    style "typography_mixin" { font_size: 16; text_color: #333; }
+    style "padding_mixin" { padding: 10; }
+    style "border_mixin_red" { border_width: 1; border_color: red; }
+    style "border_mixin_blue" { border_width: 2; border_color: blue; }
+
+    # "border_mixin_blue" properties will override "border_mixin_red" for border properties.
+    # "typography_mixin" properties will be included.
+    # "padding_mixin" properties will be included.
+    style "fancy_button" {
+        extends: ["padding_mixin", "typography_mixin", "border_mixin_red", "border_mixin_blue"]
+        background_color: #EEEEEE # Direct property, overrides any inherited background
+        font_weight: bold        # Direct property
     }
 
     # Usage
     Button {
-        style: "button_primary"
+        style: "fancy_button"
         text: "Submit"
     }
     ```
@@ -141,7 +259,7 @@ Textually includes the content of another `.kry` file. Processed by the compiler
 
 ## 8. Component Definition (`Define`)
 
-Allows defining reusable custom UI components using standard elements as a base. This is a **source-level abstraction**. The compiler processes these definitions. The resulting `.krb` file may contain these definitions in a `Component Definition Table` for runtime instantiation, or the compiler may expand component usages directly into the main UI tree. In either case, the **runtime interprets** the final behavior based on the compiled KRB structure (instantiated elements and their properties, including custom ones).
+Allows defining reusable custom UI components. These definitions are compiled into a `Component Definition Table` in the `.krb` file, enabling the runtime to instantiate them.
 
 *   **Syntax:**
     ```kry
@@ -151,71 +269,195 @@ Allows defining reusable custom UI components using standard elements as a base.
             # propName: Type = DefaultValue # e.g., text_label: String = "Default"
             # e.g., count: Int = 0
             # e.g., is_enabled: Bool = true
-            # e.g., item_style: StyleID = "default_item_style"
-            # e.g., status: Enum(active, inactive, pending) = active
+            # e.g., item_style: StyleID = "default_item_style" # Maps to standard StyleID of root
+            # e.g., status: Enum(active, inactive, pending) = active # Becomes custom prop
         }
 
         # Required: The root element structure using standard Kryon elements.
         # This defines the base KRB element(s) generated for this component's template.
+        # This template is stored in the KRB Component Definition Table.
         Container { # Or Button, Text, etc. - Must be a single root standard element.
-            # ... (standard properties and child elements)
+            # ... (standard properties and child elements forming the template)
+            # Properties here are defaults for the template.
+            # Instance-specific 'id', 'style', etc. come from the usage tag.
+            # Children defined here are part of the template.
+            # Children provided in the usage tag are handled by the runtime (see "Handling Children" below).
         }
     }
     ```
 
 *   **Properties Block Details:**
     The `Properties` block within a `Define` statement declares the properties that instances of this component can accept.
-    *   **Supported Types:** `String`, `Int`, `Float`, `Bool`, `Color`, `StyleID`, `Enum(...)`.
-        *   **`StyleID` Type Note:** When a property is declared with type `StyleID` (e.g., `my_style_prop: StyleID = "default_button_style"`), its default value (the style name string) is stored in the KRB Component Definition Table using a `Value Type Hint` of `VAL_TYPE_STRING` (representing a string table index) and the corresponding string index as the `Default Value Data`. The compiler uses this property at instantiation time to look up the actual 1-based Style Block ID and apply it to the relevant element's header.
-        *   **`Enum(...)` Type Note:** When a property is declared with an `Enum` type (e.g., `status: Enum(active, inactive, pending) = active`), its default value (the enum member string, e.g., "active") is stored in the KRB Component Definition Table using a `Value Type Hint` of `VAL_TYPE_STRING` (representing a string table index) and the corresponding string index as the `Default Value Data`. The list of valid enum members (e.g., "active", "inactive", "pending") is implicitly defined by the KRY source. During component instantiation, the provided value (as a string) would typically be validated by the compiler or runtime against these defined members.
-    *   Default values are optional. If a default value is not provided, the property must be supplied when the component is used, unless the runtime has its own handling for missing optional properties.
+    *   **Supported Types:** `String`, `Int`, `Float`, `Bool`, `Color`, `StyleID`, `Enum(...)`, `Resource`.
+    *   **Default Values:** Optional. If a default value is not provided, the property might be considered required by the runtime or have a runtime-defined default.
+    *   **KRB Mapping of Declared Properties:**
+        *   **Standard KRY Properties:** If a declared property in `Properties {}` has the same name as a standard KRY property applicable to the *root element of the component's template* (e.g., `id`, `width`, `height`, `style`, `pos_x`, `pos_y`, `layout`), the compiler will treat values for these from the usage tag as intending to set these standard aspects of the component *instance's placeholder element*. The runtime, upon instantiation, should then apply these to the *actual root element created from the template*.
+            *   Example: `Define MyComponent { Properties { custom_style: StyleID = "default_component_root_style" } Container { ... } }`
+                Usage: `<MyComponent custom_style="instance_specific_style">`
+                The `custom_style` value from the KRY usage will be resolved to a StyleID by the compiler and potentially stored as a custom property on the placeholder. The runtime would apply this StyleID to the `Container` instantiated from `MyComponent`'s template.
+            *   **Special Case: `style` and `id`**
+                If a component usage includes `style: "some_style"` or `id: "some_id"`, these are always intended for the component instance itself. The `style` will be applied to the root element of the instantiated component. The `id` will be the identifier for the component instance. These are **not** treated as custom properties if they match standard KRY properties for elements.
+        *   **Component-Specific Properties:** Any other declared properties (e.g., `orientation`, `position` for a `TabBar`, `label_text` for a custom button) are treated as component-specific. The compiler will encode these as **KRB Custom Properties** on the placeholder element representing the component instance. The runtime is responsible for interpreting these custom properties.
 
-*   **Usage:** Use the defined component like a standard element:
+*   **Usage (Instantiation in KRY):**
+    Use the defined component like a standard element. This KRY usage translates into a **placeholder KRB element** in the main UI tree.
     ```kry
     ComponentName {
-        id: "my_instance_1"
-        text_label: "Click Me" # Assuming text_label was defined in Properties
-        # ... other declared properties ...
+        id: "my_instance_1"        # Standard property for the instance
+        style: "instance_root_style" # Standard property for the instance's root
+        width: "50%"               # Standard property for the instance
+        # Declared properties from ComponentName.Properties block:
+        text_label: "Click Me"     # Becomes a KRB Custom Property on placeholder
+        is_enabled: false          # Becomes a KRB Custom Property on placeholder
+        # ... other declared/standard properties ...
+
+        # Optional: Children for this specific instance
+        # These are NOT part of the component's Define template.
+        # The runtime is responsible for placing these children within the
+        # instantiated component, typically into a designated container
+        # within the component's template (e.g., a child Container with id="content_area").
+        Text { text: "Child passed to instance" }
     }
     ```
 
 *   **Compiler Role:**
-    1.  **Parsing `Define` Blocks:** Storing the definition, including declared properties (their names, types, default values) and the expansion structure (the "template").
-    2.  **Populating KRB Component Definition Table (Optional/Strategy-Dependent):**
-        *   The compiler **may** serialize the parsed `Define ComponentName` block (its declared properties, default values, and root element template) into the `Component Definition Table` within the `.krb` file. This makes the component definition available for runtime instantiation or linking by other `.krb` files.
-        *   This is especially relevant when compiling `.kry` files intended as component libraries.
-    3.  **Handling Component Usage (`<ComponentName>`) - Two Primary Strategies:**
-        *   **A) Inline Expansion:** The compiler might directly expand the usage of `<ComponentName>` into the corresponding standard KRB element structure (defined in its `Define` block) within the main UI element tree of the `.krb` file. This is similar to a macro expansion.
-        *   **B) Instantiation Reference (Conceptual):** If the component's definition is in the `Component Definition Table`, the usage in `.kry` could conceptually translate to a placeholder or a special element type in the `.krb`'s main UI tree that instructs the runtime to instantiate that component from the table. *(The exact KRB mechanism for this reference needs to be defined if not simple inline expansion – e.g., a specific ELEM_TYPE or a custom property pointing to the definition name).* **For KRB v0.4, the primary documented mechanism for `Define` is still compiler-side expansion into standard elements, possibly with custom properties. The Component Definition Table serves as a library of these templates.**
-    4.  **Validating & Merging Properties (during expansion or for instance creation):**
-        *   Checks if properties provided in the usage tag match the `Properties` declaration (name and type compatibility).
-        *   Applies standard properties (`id`, `pos_x`, `width`, `style`, etc.) from the usage tag to the root KRB element generated/instantiated from the template.
-        *   For properties declared in the `Define`'s `Properties` block:
-            *   If the property maps directly to a *standard* KRB property of the generated element(s) (e.g., a `Define`d `bar_style: StyleID` property setting the `Style ID` in the KRB Element Header), the compiler performs this mapping.
-            *   If the property represents component-specific logic or data (e.g., `TabBar`'s `position`), the compiler typically **encodes it as a Custom Property** in the KRB for runtime handling. Values from the usage tag take precedence over default values from the `Define` block.
-    5.  **Handling Children:** Inserts KRB representations of child elements from the usage tag into the appropriate location within the expanded/instantiated KRB structure (often as children of the template's root element).
-    6.  **Generating KRB:** The output `.krb` contains standard KRB elements, standard properties, events, children, potentially Custom Properties, and potentially a `Component Definition Table`.
+    1.  **Parsing `Define` Blocks:**
+        *   Stores the definition: name, declared properties (name, type hint, default value string), and the root element template structure.
+        *   Serializes this information into the `Component Definition Table` in the `.krb` file.
+    2.  **Handling Component Usage (`<ComponentName>`):**
+        *   Recognizes `ComponentName` as a defined component.
+        *   Generates a **single placeholder KRB element** in the main UI tree.
+            *   The `Type` of this placeholder element could be a generic `ELEM_TYPE_CONTAINER` or a specific `ELEM_TYPE_CUSTOM` if desired, but `ELEM_TYPE_CONTAINER` is often sufficient if the runtime uses the `_componentName` custom property for identification. The KRB spec (v0.4) suggests standard element types (like Container) combined with Custom Properties is often preferred. For this strategy, we'll assume the placeholder's `Type` matches the *root element type of the component's definition template*.
+            *   The `ID` field in the placeholder's Element Header is set from the `id: "..."` in the KRY usage.
+            *   Other standard KRY properties from the usage tag (`pos_x`, `pos_y`, `width`, `height`, `layout`, `style`) are applied to the *placeholder element's header/standard properties*. The runtime will then typically transfer/apply these to the actual root of the instantiated component.
+        *   **`_componentName` Custom Property:** The compiler **must** add a KRB Custom Property with the key `_componentName` (or another agreed-upon convention) to the placeholder element. The value of this property will be the string table index of `ComponentName`. This allows the runtime to identify which component definition to use for instantiation.
+        *   **Instance-Specific Properties:**
+            *   For properties in the KRY usage tag that match a name in the `Define ComponentName { Properties {...} }` block (and are not standard KRY element properties like `id` or `style`), the compiler encodes them as **KRB Custom Properties** on the placeholder element.
+            *   Values from the KRY usage tag override default values from the `Define` block.
+        *   **Children in Usage:** Children defined within a component usage tag in KRY (e.g., the `Text` element in the `ComponentName` example above) are compiled into standard KRB child element blocks. These become children of the *placeholder KRB element*. The runtime is then responsible for taking these children and re-parenting them into an appropriate location within the instantiated component's structure. This often involves a convention (e.g., the component's template has a `Container { id: "slot" }` where instance children are placed).
 
-*   **Runtime Role (Crucial):**
-    *   The runtime parses the KRB file.
-    *   **If the `.krb` contains a `Component Definition Table`:** The runtime might use these definitions to:
-        *   Dynamically instantiate components not present in the initial UI tree (e.g., via code).
-        *   Resolve references from the main UI tree that point to these definitions (if using an instantiation reference strategy).
-    *   When it encounters an element (e.g., a `Container` generated from a `<TabBar>` usage, or an instance of a `TabBar` from the definition table), it checks for associated **Custom Properties** (like `position`).
-    *   The runtime contains the specific logic necessary to **interpret** these custom properties and implement the component's unique behavior.
-
-*   **Example (`TabBar`'s `position` Property - Compiler/Runtime Interaction):**
-    *   Compiler sees `<TabBar { position: "bottom"; ... }>`, where `TabBar` is defined via `Define TabBar { Properties { position: String; ... } Container {...} }`.
-    *   **Scenario 1 (Inline Expansion):** Compiler generates a KRB `Container` element directly in the UI tree based on the `TabBar`'s `Define`d `Container` template. It adds a **Custom Property** to this KRB `Container`: `{ key_index_for_ "position", value_type_string_index, value_size_1, string_index_for_"bottom" }`.
-    *   **Scenario 2 (Using Definition Table - advanced):** The `Define TabBar` is in the KRB's `Component Definition Table`. The main UI tree might have a reference. When instantiated, the runtime would apply the `position: "bottom"` from the usage as a custom property to the instantiated `Container`.
-    *   **Runtime** (in both scenarios) parses this `Container`, sees the `position="bottom"` custom property, and executes its internal logic to place this container accordingly.
+*   **Runtime Role (Crucial for Instantiation Strategy):**
+    1.  **Parsing KRB:** Reads the main UI tree and the `Component Definition Table`.
+    2.  **Encountering a Placeholder Element:**
+        *   Identifies it as a component instance placeholder, typically by checking for the `_componentName` custom property.
+        *   Retrieves the component name string using the value of `_componentName`.
+        *   Looks up the corresponding `ComponentDefinition` in its parsed `Component Definition Table`. If not found, this is an error (as seen in your logs).
+    3.  **Instantiation:**
+        *   Creates a new element subtree in its internal render tree based on the `Root Element Template` from the found `ComponentDefinition`.
+        *   Applies standard properties (`ID`, `StyleID`, `PosX`, `PosY`, `Width`, `Height`, `Layout` byte) from the *placeholder KRB element* to the *root element of the newly instantiated subtree*.
+        *   Processes KRB Custom Properties found on the *placeholder element*:
+            *   These correspond to the component-specific properties declared in `Define.Properties` and set in the KRY usage tag.
+            *   The runtime uses these custom properties to configure the behavior and appearance of the instantiated component and its internal elements.
+    4.  **Handling Children from Usage:**
+        *   If the placeholder KRB element has children, the runtime takes these children.
+        *   It re-parents them into a designated "slot" or content area within the newly instantiated component's structure. This typically requires a convention (e.g., the component's template defines a `Container { id: "children_host" }` and the runtime looks for it). If no such slot is defined or found, the runtime might append them as direct children of the instantiated component's root, or it might be an error, depending on the component's design.
+    5.  The placeholder element itself is effectively replaced by the instantiated component subtree in the runtime's final render tree.
 
 *   **Relationship with KRB `Component Definition Table`:**
-    *   The KRY `Define` block is the source for entries in the KRB `Component Definition Table`.
-    *   A `.kry` file might consist entirely of `Define` blocks, acting as a component library. When compiled, this would primarily populate the `Component Definition Table` in the `.krb` file.
-    *   An application `.kry` file might use components defined locally or included from such libraries.
-    *   The primary expectation for KRB v0.4 is that `Define`d components in an application `.kry` are expanded by the compiler into standard elements in the main UI tree, potentially with custom properties. The `Component Definition Table` serves as a library of these templates, allowing them to be stored and potentially reused (e.g., by a runtime for dynamic instantiation via code, or by other `.kry` files at compile time).
+    *   The KRY `Define` block is the direct source for entries in the KRB `Component Definition Table`.
+    *   The compiler ensures this table is populated.
+    *   The runtime relies entirely on this table for instantiating components referenced in the main KRB element tree.
+    ## 8. Component Definition (`Define`)
 
+Allows defining reusable custom UI components. These definitions are compiled into a `Component Definition Table` in the `.krb` file, enabling the runtime to instantiate them.
+
+*   **Syntax:**
+    ```kry
+    Define ComponentName {
+        # Optional: Declare properties the component accepts from usage tags.
+        Properties {
+            # propName: Type = DefaultValue # e.g., text_label: String = "Default"
+            # e.g., count: Int = 0
+            # e.g., is_enabled: Bool = true
+            # e.g., item_style: StyleID = "default_item_style" # Maps to standard StyleID of root
+            # e.g., status: Enum(active, inactive, pending) = active # Becomes custom prop
+        }
+
+        # Required: The root element structure using standard Kryon elements.
+        # This defines the base KRB element(s) generated for this component's template.
+        # This template is stored in the KRB Component Definition Table.
+        Container { # Or Button, Text, etc. - Must be a single root standard element.
+            # ... (standard properties and child elements forming the template)
+            # Properties here are defaults for the template.
+            # Instance-specific 'id', 'style', etc. come from the usage tag.
+            # Children defined here are part of the template.
+            # Children provided in the usage tag are handled by the runtime (see "Handling Children" below).
+        }
+    }
+    ```
+
+*   **Properties Block Details:**
+    The `Properties` block within a `Define` statement declares the properties that instances of this component can accept.
+    *   **Supported Types:** `String`, `Int`, `Float`, `Bool`, `Color`, `StyleID`, `Enum(...)`, `Resource`.
+    *   **Default Values:** Optional. If a default value is not provided, the property might be considered required by the runtime or have a runtime-defined default.
+    *   **KRB Mapping of Declared Properties:**
+        *   **Standard KRY Properties:** If a declared property in `Properties {}` has the same name as a standard KRY property applicable to the *root element of the component's template* (e.g., `id`, `width`, `height`, `style`, `pos_x`, `pos_y`, `layout`), the compiler will treat values for these from the usage tag as intending to set these standard aspects of the component *instance's placeholder element*. The runtime, upon instantiation, should then apply these to the *actual root element created from the template*.
+            *   Example: `Define MyComponent { Properties { custom_style: StyleID = "default_component_root_style" } Container { ... } }`
+                Usage: `<MyComponent custom_style="instance_specific_style">`
+                The `custom_style` value from the KRY usage will be resolved to a StyleID by the compiler and potentially stored as a custom property on the placeholder. The runtime would apply this StyleID to the `Container` instantiated from `MyComponent`'s template.
+            *   **Special Case: `style` and `id`**
+                If a component usage includes `style: "some_style"` or `id: "some_id"`, these are always intended for the component instance itself. The `style` will be applied to the root element of the instantiated component. The `id` will be the identifier for the component instance. These are **not** treated as custom properties if they match standard KRY properties for elements.
+        *   **Component-Specific Properties:** Any other declared properties (e.g., `orientation`, `position` for a `TabBar`, `label_text` for a custom button) are treated as component-specific. The compiler will encode these as **KRB Custom Properties** on the placeholder element representing the component instance. The runtime is responsible for interpreting these custom properties.
+
+*   **Usage (Instantiation in KRY):**
+    Use the defined component like a standard element. This KRY usage translates into a **placeholder KRB element** in the main UI tree.
+    ```kry
+    ComponentName {
+        id: "my_instance_1"        # Standard property for the instance
+        style: "instance_root_style" # Standard property for the instance's root
+        width: "50%"               # Standard property for the instance
+        # Declared properties from ComponentName.Properties block:
+        text_label: "Click Me"     # Becomes a KRB Custom Property on placeholder
+        is_enabled: false          # Becomes a KRB Custom Property on placeholder
+        # ... other declared/standard properties ...
+
+        # Optional: Children for this specific instance
+        # These are NOT part of the component's Define template.
+        # The runtime is responsible for placing these children within the
+        # instantiated component, typically into a designated container
+        # within the component's template (e.g., a child Container with id="content_area").
+        Text { text: "Child passed to instance" }
+    }
+    ```
+
+*   **Compiler Role:**
+    1.  **Parsing `Define` Blocks:**
+        *   Stores the definition: name, declared properties (name, type hint, default value string), and the root element template structure.
+        *   Serializes this information into the `Component Definition Table` in the `.krb` file.
+    2.  **Handling Component Usage (`<ComponentName>`):**
+        *   Recognizes `ComponentName` as a defined component.
+        *   Generates a **single placeholder KRB element** in the main UI tree.
+            *   The `Type` of this placeholder element could be a generic `ELEM_TYPE_CONTAINER` or a specific `ELEM_TYPE_CUSTOM` if desired, but `ELEM_TYPE_CONTAINER` is often sufficient if the runtime uses the `_componentName` custom property for identification. The KRB spec (v0.4) suggests standard element types (like Container) combined with Custom Properties is often preferred. For this strategy, we'll assume the placeholder's `Type` matches the *root element type of the component's definition template*.
+            *   The `ID` field in the placeholder's Element Header is set from the `id: "..."` in the KRY usage.
+            *   Other standard KRY properties from the usage tag (`pos_x`, `pos_y`, `width`, `height`, `layout`, `style`) are applied to the *placeholder element's header/standard properties*. The runtime will then typically transfer/apply these to the actual root of the instantiated component.
+        *   **`_componentName` Custom Property:** The compiler **must** add a KRB Custom Property with the key `_componentName` (or another agreed-upon convention) to the placeholder element. The value of this property will be the string table index of `ComponentName`. This allows the runtime to identify which component definition to use for instantiation.
+        *   **Instance-Specific Properties:**
+            *   For properties in the KRY usage tag that match a name in the `Define ComponentName { Properties {...} }` block (and are not standard KRY element properties like `id` or `style`), the compiler encodes them as **KRB Custom Properties** on the placeholder element.
+            *   Values from the KRY usage tag override default values from the `Define` block.
+        *   **Children in Usage:** Children defined within a component usage tag in KRY (e.g., the `Text` element in the `ComponentName` example above) are compiled into standard KRB child element blocks. These become children of the *placeholder KRB element*. The runtime is then responsible for taking these children and re-parenting them into an appropriate location within the instantiated component's structure. This often involves a convention (e.g., the component's template has a `Container { id: "slot" }` where instance children are placed).
+
+*   **Runtime Role (Crucial for Instantiation Strategy):**
+    1.  **Parsing KRB:** Reads the main UI tree and the `Component Definition Table`.
+    2.  **Encountering a Placeholder Element:**
+        *   Identifies it as a component instance placeholder, typically by checking for the `_componentName` custom property.
+        *   Retrieves the component name string using the value of `_componentName`.
+        *   Looks up the corresponding `ComponentDefinition` in its parsed `Component Definition Table`. If not found, this is an error (as seen in your logs).
+    3.  **Instantiation:**
+        *   Creates a new element subtree in its internal render tree based on the `Root Element Template` from the found `ComponentDefinition`.
+        *   Applies standard properties (`ID`, `StyleID`, `PosX`, `PosY`, `Width`, `Height`, `Layout` byte) from the *placeholder KRB element* to the *root element of the newly instantiated subtree*.
+        *   Processes KRB Custom Properties found on the *placeholder element*:
+            *   These correspond to the component-specific properties declared in `Define.Properties` and set in the KRY usage tag.
+            *   The runtime uses these custom properties to configure the behavior and appearance of the instantiated component and its internal elements.
+    4.  **Handling Children from Usage:**
+        *   If the placeholder KRB element has children, the runtime takes these children.
+        *   It re-parents them into a designated "slot" or content area within the newly instantiated component's structure. This typically requires a convention (e.g., the component's template defines a `Container { id: "children_host" }` and the runtime looks for it). If no such slot is defined or found, the runtime might append them as direct children of the instantiated component's root, or it might be an error, depending on the component's design.
+    5.  The placeholder element itself is effectively replaced by the instantiated component subtree in the runtime's final render tree.
+
+*   **Relationship with KRB `Component Definition Table`:**
+    *   The KRY `Define` block is the direct source for entries in the KRB `Component Definition Table`.
+    *   The compiler ensures this table is populated.
+    *   The runtime relies entirely on this table for instantiating components referenced in the main KRB element tree.
+    
 ## 9. Events
 
 Event handlers are assigned via properties like `onClick`, `onChange`, etc. The value is a string naming a function expected to exist in the target runtime environment. The compiler maps these to KRB Event entries.
