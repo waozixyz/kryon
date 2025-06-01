@@ -21,7 +21,7 @@ App {
         text: "Click Me!"
         text_alignment: center
         background_color: "#404080FF"
-
+        border_color: "#0099FFFF"
         onClick: "handleButtonClick"
     }
 }

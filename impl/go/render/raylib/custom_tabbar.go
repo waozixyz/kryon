@@ -6,127 +6,109 @@ import (
 	"log"
 	"strings"
 
+	// "github.com/gen2brain/raylib-go/raylib" // Not needed if rl types come from render package
 	"github.com/waozixyz/kryon/impl/go/krb"
 	"github.com/waozixyz/kryon/impl/go/render"
 )
 
-// TabBarHandler implements render.CustomComponentHandler for TabBar components.
 type TabBarHandler struct{}
 
-// HandleLayoutAdjustment adjusts the TabBar's position based on the 'position'
-// custom property and resizes its sibling (assumed main content area).
-// It also re-layouts its own children within its new adjusted frame.
-func (h *TabBarHandler) HandleLayoutAdjustment(el *render.RenderElement, doc *krb.Document) error {
+func (h *TabBarHandler) HandleLayoutAdjustment(
+	el *render.RenderElement,
+	doc *krb.Document,
+	rendererInstance render.Renderer, // <<< Renderer instance now passed
+) error {
 	if el == nil {
 		return fmt.Errorf("tabBar handler: received nil element")
 	}
 	elIDStr := fmt.Sprintf("ElemGlobalIdx %d Name '%s'", el.OriginalIndex, el.SourceElementName)
 
 	if el.Parent == nil {
-		log.Printf("WARN TabBarHandler [%s]: cannot adjust layout without a parent. TabBar might be a root element.", elIDStr)
-		// If it's a root, it can't adjust relative to parent or siblings.
-		// It can still re-layout its own children if its own frame was changed by window resize.
-		// For now, we'll return if no parent, as typical usage involves a parent.
-		return nil // Or return fmt.Errorf, depending on how strict this should be.
+		log.Printf("WARN TabBarHandler [%s]: cannot adjust layout without a parent.", elIDStr)
+		return nil
 	}
 	if doc == nil {
 		return fmt.Errorf("tabBar %s: KRB document is nil", elIDStr)
 	}
+	if rendererInstance == nil {
+		return fmt.Errorf("tabBar %s: renderer instance is nil", elIDStr)
+	}
 
-	// Use exported GetCustomPropertyValue from raylib_renderer.go
 	position, posOk := GetCustomPropertyValue(el, "position", doc)
 	if !posOk {
-		position = "bottom" // Default if 'position' property is missing
+		position = "bottom"
 	}
 	orientation, orientOk := GetCustomPropertyValue(el, "orientation", doc)
 	if !orientOk {
-		orientation = "row" // Default if 'orientation' property is missing
+		orientation = "row"
 	}
 
 	parent := el.Parent
-	parentIDStr := fmt.Sprintf("ElemGlobalIdx %d Name '%s'", parent.OriginalIndex, parent.SourceElementName)
 	parentW, parentH := parent.RenderW, parent.RenderH
 	parentX, parentY := parent.RenderX, parent.RenderY
-
-	// TabBar's current dimensions (before this adjustment)
-	// These might have been set by the initial layout pass.
 	initialW, initialH := el.RenderW, el.RenderH
-	initialX, initialY := el.RenderX, el.RenderY
 
-	log.Printf("DEBUG TabBarHandler [%s]: Adjusting. Pos:'%s' Orient:'%s' | Initial Frame: X:%.1f,Y:%.1f W:%.1fxH:%.1f | Parent [%s] Frame: X:%.1f,Y:%.1f W:%.1fxH:%.1f",
-		elIDStr, position, orientation, initialX, initialY, initialW, initialH, parentIDStr, parentX, parentY, parentW, parentH)
+	log.Printf("DEBUG TabBarHandler [%s]: Adjusting. Pos:'%s' Orient:'%s' | Initial Frame: X:%.1f,Y:%.1f W:%.1fxH:%.1f | Parent Frame: X:%.1f,Y:%.1f W:%.1fxH:%.1f",
+		elIDStr, position, orientation, el.RenderX, el.RenderY, initialW, initialH, parentX, parentY, parentW, parentH)
 
-	newX, newY, newW, newH := initialX, initialY, initialW, initialH
+	newX, newY, newW, newH := el.RenderX, el.RenderY, initialW, initialH
 	stretchWidth := (strings.ToLower(orientation) == "row")
 	stretchHeight := (strings.ToLower(orientation) == "column")
 
-	// Determine TabBar's new position and size based on 'position' and 'orientation'
 	switch strings.ToLower(position) {
 	case "top":
-		newY = parentY // Align with parent's top
-		newX = parentX // Align with parent's left
+		newY = parentY
+		newX = parentX
 		if stretchWidth {
-			newW = parentW // Stretch to parent's width
+			newW = parentW
 		}
-		// Height (newH) remains initialH unless stretchHeight is true (uncommon for top/bottom bars)
 	case "bottom":
-		newY = parentY + parentH - initialH // Align bottom of TabBar with parent's bottom
-		if newY < parentY { newY = parentY } // Prevent going above parent's top
-		newX = parentX // Align with parent's left
+		newY = parentY + parentH - initialH
+		if newY < parentY {
+			newY = parentY
+		}
+		newX = parentX
 		if stretchWidth {
-			newW = parentW // Stretch to parent's width
+			newW = parentW
 		}
 	case "left":
-		newX = parentX // Align with parent's left
-		newY = parentY // Align with parent's top
+		newX = parentX
+		newY = parentY
 		if stretchHeight {
-			newH = parentH // Stretch to parent's height
+			newH = parentH
 		}
-		// Width (newW) remains initialW unless stretchWidth is true
 	case "right":
-		newX = parentX + parentW - initialW // Align right of TabBar with parent's right
-		if newX < parentX { newX = parentX } // Prevent going left of parent's start
-		newY = parentY // Align with parent's top
+		newX = parentX + parentW - initialW
+		if newX < parentX {
+			newX = parentX
+		}
+		newY = parentY
 		if stretchHeight {
-			newH = parentH // Stretch to parent's height
+			newH = parentH
 		}
 	default:
-		log.Printf("Warn TabBarHandler [%s]: Unknown position value '%s'. Defaulting to 'bottom'.", elIDStr, position)
-		position = "bottom" // Ensure position variable matches default logic
+		log.Printf("Warn TabBarHandler [%s]: Unknown position '%s'. Defaulting to 'bottom'.", elIDStr, position)
+		position = "bottom" // update resolved position for sibling logic
 		newY = parentY + parentH - initialH
-		if newY < parentY { newY = parentY }
+		if newY < parentY {
+			newY = parentY
+		}
 		newX = parentX
 		if stretchWidth {
 			newW = parentW
 		}
 	}
 
-	// Ensure minimum dimensions for the TabBar itself
-	finalW := MaxF(1.0, newW)
-	finalH := MaxF(1.0, newH)
+	finalW := MaxF(1.0, newW) // Ensure min 1px
+	finalH := MaxF(1.0, newH) // Ensure min 1px
 
-	frameChanged := (newX != el.RenderX || newY != el.RenderY || finalW != el.RenderW || finalH != el.RenderH)
+	el.RenderX, el.RenderY, el.RenderW, el.RenderH = newX, newY, finalW, finalH
+	log.Printf("DEBUG TabBarHandler [%s]: Frame adjusted to X:%.1f,Y:%.1f W:%.1fxH:%.1f.", elIDStr, el.RenderX, el.RenderY, el.RenderW, el.RenderH)
 
-	if frameChanged {
-		el.RenderX = newX
-		el.RenderY = newY
-		el.RenderW = finalW
-		el.RenderH = finalH
-		log.Printf("DEBUG TabBarHandler [%s]: Frame *WAS* modified by custom adjustment to X:%.1f,Y:%.1f W:%.1fxH:%.1f.", elIDStr, el.RenderX, el.RenderY, el.RenderW, el.RenderH)
-	} else {
-		log.Printf("DEBUG TabBarHandler [%s]: Frame unchanged by custom adjustment. Re-layout of children might still be needed if parent resized.", elIDStr)
-		// Even if the TabBar's frame relative to parent didn't change, if the parent resized,
-		// the TabBar (if stretching) and its children might need re-layout.
-		// The current frameChanged only checks if THIS adjustment changed it.
-		// A more robust check would be if parent dimensions changed OR this adjustment changed it.
-		// For now, if no change from THIS adjustment, we proceed to children re-layout as parent might have changed.
-	}
-
-	// Adjust sibling element (assumed to be the main content area)
-	var mainContentSibling *render.RenderElement = nil
-	if len(parent.Children) > 1 { // Need at least one other child to be the sibling
+	var mainContentSibling *render.RenderElement
+	if len(parent.Children) > 1 {
 		for _, sibling := range parent.Children {
-			if sibling != nil && sibling != el { // Find the first sibling that is not the TabBar itself
+			if sibling != nil && sibling != el {
 				mainContentSibling = sibling
 				break
 			}
@@ -135,79 +117,74 @@ func (h *TabBarHandler) HandleLayoutAdjustment(el *render.RenderElement, doc *kr
 
 	if mainContentSibling != nil {
 		siblingIDStr := fmt.Sprintf("ElemGlobalIdx %d Name '%s'", mainContentSibling.OriginalIndex, mainContentSibling.SourceElementName)
-		log.Printf("DEBUG TabBarHandler [%s]: Found main content sibling [%s] to adjust.", elIDStr, siblingIDStr)
+		origSiblingX, origSiblingY, origSiblingW, origSiblingH := mainContentSibling.RenderX, mainContentSibling.RenderY, mainContentSibling.RenderW, mainContentSibling.RenderH
 
-		origSiblingX, origSiblingY := mainContentSibling.RenderX, mainContentSibling.RenderY
-		origSiblingW, origSiblingH := mainContentSibling.RenderW, mainContentSibling.RenderH
-
-		switch strings.ToLower(position) { // Use the resolved position
+		switch strings.ToLower(position) {
 		case "bottom":
-			// Sibling (content area) height should be from its current top to the TabBar's new top
-			mainContentSibling.RenderH = MaxF(1.0, el.RenderY - mainContentSibling.RenderY)
-			// Sibling width and X position usually remain unchanged
+			mainContentSibling.RenderH = MaxF(1.0, el.RenderY-mainContentSibling.RenderY)
 		case "top":
-			// Sibling (content area) new top is the TabBar's new bottom
 			newSibY := el.RenderY + el.RenderH
-			// Sibling's new height is its original bottom edge minus its new top edge
-			mainContentSibling.RenderH = MaxF(1.0, (origSiblingY + origSiblingH) - newSibY)
+			mainContentSibling.RenderH = MaxF(1.0, (origSiblingY+origSiblingH)-newSibY)
 			mainContentSibling.RenderY = newSibY
-			// Sibling width and X position usually remain unchanged
 		case "left":
 			newSibX := el.RenderX + el.RenderW
-			mainContentSibling.RenderW = MaxF(1.0, (origSiblingX + origSiblingW) - newSibX)
+			mainContentSibling.RenderW = MaxF(1.0, (origSiblingX+origSiblingW)-newSibX)
 			mainContentSibling.RenderX = newSibX
-			// Sibling height and Y position usually remain unchanged
 		case "right":
-			// Sibling (content area) width should be from its current left to the TabBar's new left
-			mainContentSibling.RenderW = MaxF(1.0, el.RenderX - mainContentSibling.RenderX)
-			// Sibling height and Y position usually remain unchanged
+			mainContentSibling.RenderW = MaxF(1.0, el.RenderX-mainContentSibling.RenderX)
 		}
-		// Ensure non-negative dimensions for sibling after adjustment
 		mainContentSibling.RenderW = MaxF(0, mainContentSibling.RenderW)
 		mainContentSibling.RenderH = MaxF(0, mainContentSibling.RenderH)
-
-		log.Printf("DEBUG TabBarHandler [%s]: Sibling [%s] frame adjusted from (X:%.1f,Y:%.1f W:%.1fxH:%.1f) to (X:%.1f,Y:%.1f W:%.1fxH:%.1f)",
-			elIDStr, siblingIDStr,
-			origSiblingX, origSiblingY, origSiblingW, origSiblingH,
-			mainContentSibling.RenderX, mainContentSibling.RenderY, mainContentSibling.RenderW, mainContentSibling.RenderH)
-	} else {
-		log.Printf("DEBUG TabBarHandler [%s]: No distinct sibling found to adjust, or TabBar is only child.", elIDStr)
+		log.Printf("DEBUG TabBarHandler [%s]: Sibling [%s] adjusted to (X:%.1f,Y:%.1f W:%.1fxH:%.1f)", elIDStr, siblingIDStr, mainContentSibling.RenderX, mainContentSibling.RenderY, mainContentSibling.RenderW, mainContentSibling.RenderH)
 	}
 
 	// --- Re-Layout TabBar's Own Children ---
-	// The TabBar (el) itself is the parent for its children.
-	// Its RenderX, RenderY, RenderW, RenderH have now been adjusted.
-	// PerformLayoutChildren will use these as the parent's bounds and apply el.Padding and el.BorderWidths
-	// (scaled by the 'childLayoutScaleFactor') to determine the client area for el's children.
+	// Calculate client area for el's children
+	// Scale factor from renderer might be needed if padding/borders are scaled within PerformLayoutChildren.
+	// The renderer instance is now available.
 
-	// Attempt to get the global scale factor. This is a workaround as the handler interface
-	// doesn't provide it directly. The best solution is to modify the interface.
-	var childLayoutScaleFactor float32 = 1.0 // Default if not found
-	if doc != nil && (doc.Header.Flags&krb.FlagHasApp) != 0 && doc.Header.ElementCount > 0 && len(doc.Properties) > 0 {
-		// Try to derive from App element's config if it exists at index 0
-		// This assumes the first element [0] is the App and has properties.
-		// And that Properties[0] belongs to the App element.
-		appConfig := render.DefaultWindowConfig() // Start with defaults
-		if len(doc.Properties[0]) > 0 {
-			// applyDirectPropertiesToConfig expects properties for the App element.
-			// This assumes doc.Properties[0] are the App's direct properties.
-			applyDirectPropertiesToConfig(doc.Properties[0], doc, &appConfig)
-			childLayoutScaleFactor = appConfig.ScaleFactor
-		}
+	// The scale factor calculation below is a bit of a hack.
+	// Ideally, the renderer provides its current scale factor.
+	var childLayoutScaleFactor float32 = 1.0
+	if appRenderer, ok := rendererInstance.(*RaylibRenderer); ok { // Type assert to get specific field
+		childLayoutScaleFactor = appRenderer.scaleFactor
+	} else {
+		log.Printf("WARN TabBarHandler [%s]: Could not get scale factor from renderer instance. Defaulting to 1.0", elIDStr)
 	}
-	// Ensure scale factor is at least 1.0
-	childLayoutScaleFactor = MaxF(1.0, childLayoutScaleFactor)
+	childLayoutScaleFactor = MaxF(1.0, childLayoutScaleFactor) // Ensure scale factor is at least 1.0
 
-	log.Printf("DEBUG TabBarHandler [%s]: Relaying out its own children within its new frame (X:%.1f,Y:%.1f W:%.1fxH:%.1f). Effective scale for children: %.2f",
+	log.Printf("DEBUG TabBarHandler [%s]: Relaying out its own children. TabBar Frame (X:%.1f,Y:%.1f W:%.1fxH:%.1f). Scale for children: %.2f",
 		elIDStr, el.RenderX, el.RenderY, el.RenderW, el.RenderH, childLayoutScaleFactor)
 
-	// Call the exported PerformLayoutChildren function from raylib_renderer.go
-	// Pass `el` as the parent, its newly adjusted RenderX/Y/W/H as the space for its children,
-	// the derived scale factor, and the document.
 	if len(el.Children) > 0 {
-		PerformLayoutChildren(el, el.RenderX, el.RenderY, el.RenderW, el.RenderH, childLayoutScaleFactor, doc)
-	} else {
-		log.Printf("DEBUG TabBarHandler [%s]: TabBar has no children to re-layout.", elIDStr)
+		// Calculate actual client area for children of 'el'
+		// This logic should mirror what PerformLayout does to calculate childContentAreaX/Y etc.
+		// Or, PerformLayoutChildrenOfElement should do this internally.
+		// For now, let's assume PerformLayoutChildrenOfElement can derive client area correctly from parent's frame.
+		elPaddingTop := ScaledF32(el.Padding[0], childLayoutScaleFactor)
+		elPaddingRight := ScaledF32(el.Padding[1], childLayoutScaleFactor)
+		elPaddingBottom := ScaledF32(el.Padding[2], childLayoutScaleFactor)
+		elPaddingLeft := ScaledF32(el.Padding[3], childLayoutScaleFactor)
+		elBorderTop := ScaledF32(el.BorderWidths[0], childLayoutScaleFactor)
+		elBorderRight := ScaledF32(el.BorderWidths[1], childLayoutScaleFactor)
+		elBorderBottom := ScaledF32(el.BorderWidths[2], childLayoutScaleFactor)
+		elBorderLeft := ScaledF32(el.BorderWidths[3], childLayoutScaleFactor)
+
+		childrenClientOriginX := el.RenderX + elBorderLeft + elPaddingLeft
+		childrenClientOriginY := el.RenderY + elBorderTop + elPaddingTop
+		childrenAvailableClientWidth := el.RenderW - (elBorderLeft + elBorderRight + elPaddingLeft + elPaddingRight)
+		childrenAvailableClientHeight := el.RenderH - (elBorderTop + elBorderBottom + elPaddingTop + elPaddingBottom)
+
+		childrenAvailableClientWidth = MaxF(0, childrenAvailableClientWidth)
+		childrenAvailableClientHeight = MaxF(0, childrenAvailableClientHeight)
+
+		rendererInstance.PerformLayoutChildrenOfElement(
+			el, // el is the parent for its own children
+			childrenClientOriginX,
+			childrenClientOriginY,
+			childrenAvailableClientWidth,
+			childrenAvailableClientHeight,
+		)
 	}
 
 	return nil

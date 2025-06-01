@@ -3,104 +3,124 @@ package raylib
 
 import (
 	"fmt"
-	"io/ioutil" // Needed for file reading
+	"io/ioutil"
 	"log"
-	"path/filepath" // Needed for path joining
+	"path/filepath"
 
-	rl "github.com/gen2brain/raylib-go/raylib" // <<< IMPORT ADDED WITH ALIAS 'rl' >>>
+	rl "github.com/gen2brain/raylib-go/raylib"
 	"github.com/waozixyz/kryon/impl/go/krb"
 	"github.com/waozixyz/kryon/impl/go/render"
-
-	// --- Potential Markdown Libraries ---
-	// Choose one and uncomment when implementing:
-	// "github.com/gomarkdown/markdown"
-	// "github.com/gomarkdown/markdown/ast"
-	// "github.com/gomarkdown/markdown/parser"
-	// OR
-	// "github.com/yuin/goldmark"
-	// "github.com/yuin/goldmark/text"
+	// Markdown libraries...
 )
 
-// MarkdownViewHandler implements CustomComponentHandler for MarkdownView components.
 type MarkdownViewHandler struct{}
 
-// HandleLayoutAdjustment for MarkdownView.
-// TODO: Implement the logic to parse markdown and generate children.
-func (h *MarkdownViewHandler) HandleLayoutAdjustment(el *render.RenderElement, doc *krb.Document) error {
+// GetKrbFileDir is an interface that a Renderer might implement
+// to provide its base path for resource loading by custom components.
+type KrbDirectoryProvider interface {
+	GetKrbFileDir() string
+}
+
+func (h *MarkdownViewHandler) HandleLayoutAdjustment(
+	el *render.RenderElement,
+	doc *krb.Document,
+	rendererInstance render.Renderer, // Renderer instance
+) error {
 	elIDStr := fmt.Sprintf("Elem %d", el.OriginalIndex)
 	log.Printf("DEBUG MarkdownHandler [%s]: Adjusting...", elIDStr)
 
-	// --- Check if already processed ---
-	if len(el.Children) > 0 && el.Children[0].OriginalIndex < 0 { // Check if placeholder/dynamic children exist
-		log.Printf("DEBUG MarkdownHandler [%s]: Already has dynamic children (or placeholder). Skipping regeneration.", elIDStr)
+	if len(el.Children) > 0 && el.Children[0].OriginalIndex < 0 {
+		log.Printf("DEBUG MarkdownHandler [%s]: Already has dynamic children. Skipping.", elIDStr)
 		return nil
 	}
 
-	// 1. Get the 'source' custom property value (path string)
 	sourcePath, ok := GetCustomPropertyValue(el, "source", doc)
 	if !ok {
-		log.Printf("WARN MarkdownHandler [%s]: Missing 'source' custom property. Cannot render content.", elIDStr)
+		log.Printf("WARN MarkdownHandler [%s]: Missing 'source' custom property.", elIDStr)
 		addMarkdownPlaceholder(el, "Error: Missing 'source' property.")
-		return nil // Not a fatal error for the whole layout process
+		return nil
 	}
 
-	// 2. Construct full path
-	//    !!! THIS STILL REQUIRES ACCESS TO krbFileDir FROM THE RENDERER !!!
-	krbBasePath := "." // <<< Placeholder - Needs real path somehow! >>>
+	krbBasePath := "."
+	if provider, ok := rendererInstance.(KrbDirectoryProvider); ok {
+		krbBasePath = provider.GetKrbFileDir()
+		log.Printf("DEBUG MarkdownHandler [%s]: Got krbFileDir from provider: %s", elIDStr, krbBasePath)
+	} else {
+		log.Printf("WARN MarkdownHandler [%s]: Renderer does not provide KrbFileDir. Using default base path '%s'.", elIDStr, krbBasePath)
+		if rRenderer, castOk := rendererInstance.(*RaylibRenderer); castOk { // Last resort direct cast
+			krbBasePath = rRenderer.krbFileDir // Access the field directly if it's our RaylibRenderer
+			log.Printf("DEBUG MarkdownHandler [%s]: Got krbFileDir via direct cast: %s", elIDStr, krbBasePath)
+		}
+	}
+
 	fullPath := filepath.Join(krbBasePath, sourcePath)
-	log.Printf("DEBUG MarkdownHandler [%s]: Attempting to read markdown file: %s (Base: %s)", elIDStr, fullPath, krbBasePath)
+	log.Printf("DEBUG MarkdownHandler [%s]: Reading markdown: %s", elIDStr, fullPath)
 
-	// 3. Read the Markdown file
-	_, err := ioutil.ReadFile(fullPath)
+	mdBytes, err := ioutil.ReadFile(fullPath)
 	if err != nil {
-		log.Printf("ERROR MarkdownHandler [%s]: Failed to read file '%s': %v", elIDStr, fullPath, err)
+		log.Printf("ERROR MarkdownHandler [%s]: Failed to read '%s': %v", elIDStr, fullPath, err)
 		addMarkdownPlaceholder(el, fmt.Sprintf("Error: Cannot read '%s'", sourcePath))
-		return nil // File not found/readable isn't fatal for layout
+		return nil
 	}
-	// mdContent := string(mdBytes) // <<< REMOVED UNUSED VARIABLE FOR NOW >>>
+	_ = mdBytes
 
-	// --- 4. Parse Markdown and Generate Children (Placeholder) ---
 	log.Printf("WARN MarkdownHandler [%s]: Markdown parsing & element generation NOT IMPLEMENTED.", elIDStr)
-	// TODO: Replace this placeholder section with actual Markdown processing
-	// Use mdBytes or mdContent here with your chosen markdown parser library
 
-	// If parsing/generation fails or is not implemented, add placeholder
-	addMarkdownPlaceholder(el, fmt.Sprintf("Render '%s'...", sourcePath))
+	addMarkdownPlaceholder(el, fmt.Sprintf("Render '%s'...\n(Content Area: %.0fx%.0f)", sourcePath, el.RenderW, el.RenderH))
 
-	// --- 5. Trigger Re-Layout (Crucial but Complex) ---
-	log.Printf("WARN MarkdownHandler [%s]: Re-layout after adding children is NOT IMPLEMENTED.", elIDStr)
-	// Example: PerformLayoutChildren(el, el.RenderX, el.RenderY, el.RenderW, el.RenderH, scaleFactor, doc)
+	if len(el.Children) > 0 {
+		log.Printf("INFO MarkdownHandler [%s]: Requesting re-layout of children for element.", elIDStr)
+		var scaleFactor float32 = 1.0
+		if rr, ok := rendererInstance.(*RaylibRenderer); ok {
+			scaleFactor = rr.scaleFactor
+		}
 
+		elPaddingTop := ScaledF32(el.Padding[0], scaleFactor)
+		elPaddingRight := ScaledF32(el.Padding[1], scaleFactor)
+		elPaddingBottom := ScaledF32(el.Padding[2], scaleFactor)
+		elPaddingLeft := ScaledF32(el.Padding[3], scaleFactor)
+		elBorderTop := ScaledF32(el.BorderWidths[0], scaleFactor)
+		elBorderRight := ScaledF32(el.BorderWidths[1], scaleFactor)
+		elBorderBottom := ScaledF32(el.BorderWidths[2], scaleFactor)
+		elBorderLeft := ScaledF32(el.BorderWidths[3], scaleFactor)
+
+		childrenClientOriginX := el.RenderX + elBorderLeft + elPaddingLeft
+		childrenClientOriginY := el.RenderY + elBorderTop + elPaddingTop
+		childrenAvailableClientWidth := el.RenderW - (elBorderLeft + elBorderRight + elPaddingLeft + elPaddingRight)
+		childrenAvailableClientHeight := el.RenderH - (elBorderTop + elBorderBottom + elPaddingTop + elPaddingBottom)
+
+		childrenAvailableClientWidth = MaxF(0, childrenAvailableClientWidth)
+		childrenAvailableClientHeight = MaxF(0, childrenAvailableClientHeight)
+
+		rendererInstance.PerformLayoutChildrenOfElement(
+			el,
+			childrenClientOriginX,
+			childrenClientOriginY,
+			childrenAvailableClientWidth,
+			childrenAvailableClientHeight,
+		)
+	}
 	return nil
 }
 
-// addMarkdownPlaceholder adds a simple Text element as a child for errors/info.
 func addMarkdownPlaceholder(parent *render.RenderElement, message string) {
 	if parent == nil {
 		return
 	}
-	// Ensure we don't add multiple placeholders
-	for _, child := range parent.Children {
-		if child != nil && child.OriginalIndex == -999 { // Use a specific placeholder index
-			return
-		}
-	}
+	parent.Children = nil
 
 	placeholderChild := &render.RenderElement{
-		OriginalIndex: -999, // Unique placeholder ID
-		Header:        krb.ElementHeader{Type: krb.ElemTypeText},
-		Text:          message,
-		IsVisible:     true,
-		FgColor:       rl.Red, // <<< FIXED: rl.Red is now defined >>>
-		// Default layout/size will apply
+		OriginalIndex: -999,
+		// ***** FIX APPLIED HERE: Use krb.LayoutGrowBit *****
+		Header:            krb.ElementHeader{Type: krb.ElemTypeText, Layout: krb.LayoutGrowBit},
+		Text:              message,
+		IsVisible:         true,
+		FgColor:           rl.Red,
+		BgColor:           rl.NewColor(50, 0, 0, 100),
+		DocRef:            parent.DocRef,
+		Parent:            parent,
+		SourceElementName: "MarkdownPlaceholder",
 	}
 	parent.Children = append(parent.Children, placeholderChild)
-	log.Printf("DEBUG addMarkdownPlaceholder [Parent Elem %d]: Added placeholder: '%s'", parent.OriginalIndex, message)
+	log.Printf("DEBUG addMarkdownPlaceholder [Parent Elem %d, Name '%s']: Added placeholder: '%s'", parent.OriginalIndex, parent.SourceElementName, message)
 }
-
-// TODO: Implement this function using a Markdown library
-// func generateElementsFromMarkdown(node ast.Node, parentIndex int) []*render.RenderElement {
-//    	children := []*render.RenderElement{}
-//		// ... walk AST, create Text/Image/Container elements ...
-//   	return children
-// }

@@ -56,7 +56,7 @@ These tables show the completion status of various language/renderer implementat
 |----------------|:-----------:|:------:|:-----:|
 | C / Raylib     |     v0.3      |   ~v0.3   |  v0.3   |
 | C / Term       |     v0.2      |   ~v0.2   |  ❌   |
-| Go / Raylib    |     ✅      |   ✅   |  ✅   |
+| Go / Raylib    |     ✅        |   ✅   |  ✅   |
 | JS / Web       |     〰v0.3      |   〰️v0.3   |  〰️v0.3   |
 
 ### Widgets Status
