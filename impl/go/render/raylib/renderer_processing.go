@@ -8,7 +8,7 @@ import (
 	"log"
 	"math"
 	"path/filepath"
-	"strings" // Keep for PerformLayout logging condition
+	//"strings" // Keep for PerformLayout logging condition
 
 	rl "github.com/gen2brain/raylib-go/raylib" // For rl.Blank in expandComponent, default colors
 	"github.com/waozixyz/kryon/impl/go/krb"
@@ -28,97 +28,79 @@ func (r *RaylibRenderer) PrepareTree(
 
 	var err error
 	r.krbFileDir, err = filepath.Abs(filepath.Dir(krbFilePath))
-
 	if err != nil {
-		r.krbFileDir = filepath.Dir(krbFilePath) // Fallback to relative
-		log.Printf(
-			"WARN PrepareTree: Failed to get absolute path for KRB file dir '%s': %v. Using relative base: %s",
-			krbFilePath, err, r.krbFileDir,
-		)
+		r.krbFileDir = filepath.Dir(krbFilePath)
+		log.Printf("WARN PrepareTree: Failed to get abs path for KRB file dir '%s': %v. Using relative: %s", krbFilePath, err, r.krbFileDir)
 	}
 	log.Printf("PrepareTree: Resource Base Directory set to: %s", r.krbFileDir)
 
-	windowConfig := render.DefaultWindowConfig()
-	windowConfig.DefaultBg = rl.Black // Raylib default
+	// --- 1. Initialize WindowConfig with application defaults ---
+	windowConfig := render.DefaultWindowConfig() // Gets struct with hardcoded defaults
 
-	// Default visual properties for elements
-	defaultForegroundColor := rl.RayWhite
-	defaultBorderColor := rl.Gray
-	defaultBorderWidth := uint8(0)
-	defaultTextAlignment := uint8(krb.LayoutAlignStart)
-	defaultIsVisible := true
-
+	// --- 2. Apply App Element's Style and Direct Properties to WindowConfig ---
 	isAppElementPresent := (doc.Header.Flags&krb.FlagHasApp) != 0 &&
 		doc.Header.ElementCount > 0 &&
 		doc.Elements[0].Type == krb.ElemTypeApp
 
 	if isAppElementPresent {
 		appElementKrbHeader := &doc.Elements[0]
-
+		// Apply style from App element to windowConfig
 		if appStyle, styleFound := findStyle(doc, appElementKrbHeader.StyleID); styleFound {
-			applyStylePropertiesToWindowDefaults(appStyle.Properties, doc, &windowConfig.DefaultBg)
+			r.applyStylePropertiesToWindowConfig(appStyle.Properties, doc, &windowConfig)
 		} else if appElementKrbHeader.StyleID != 0 {
-			log.Printf(
-				"Warn PrepareTree: App element has StyleID %d, but this style was not found.",
-				appElementKrbHeader.StyleID,
-			)
+			log.Printf("Warn PrepareTree: App element has StyleID %d, but style was not found.", appElementKrbHeader.StyleID)
 		}
-
+		// Apply direct properties from App element to windowConfig
 		if len(doc.Properties) > 0 && len(doc.Properties[0]) > 0 {
-			applyDirectPropertiesToConfig(doc.Properties[0], doc, &windowConfig)
+			r.applyDirectPropertiesToWindowConfig(doc.Properties[0], doc, &windowConfig)
 		}
-		r.scaleFactor = float32(math.Max(1.0, float64(windowConfig.ScaleFactor)))
-		log.Printf(
-			"PrepareTree: Processed App element. Final Window Config: Width=%d, Height=%d, Title='%s', Scale=%.2f, Resizable=%t",
-			windowConfig.Width, windowConfig.Height, windowConfig.Title, r.scaleFactor, windowConfig.Resizable,
-		)
 	} else {
 		log.Println("PrepareTree: No App element found in KRB. Using default window configuration.")
-		// Use renderer's existing scale factor or default if config not changed
-		r.scaleFactor = float32(math.Max(1.0, float64(windowConfig.ScaleFactor)))
 	}
-	r.config = windowConfig // Store final config
+	// Finalize scale factor and store config in renderer
+	r.scaleFactor = float32(math.Max(1.0, float64(windowConfig.ScaleFactor)))
+	r.config = windowConfig
+	log.Printf("PrepareTree: Final Window Config: W:%d, H:%d, Title:'%s', Scale:%.2f, Resizable:%t, DefBG:%v, DefFG:%v, DefBorder:%v",
+		r.config.Width, r.config.Height, r.config.Title, r.scaleFactor, r.config.Resizable, r.config.DefaultBg, r.config.DefaultFgColor, r.config.DefaultBorderColor)
 
+	// --- 3. Process KRB Elements into RenderElements ---
 	initialElementCount := int(doc.Header.ElementCount)
-
 	if initialElementCount == 0 {
-		log.Println("PrepareTree: No elements in KRB document. Returning empty tree.")
+		log.Println("PrepareTree: No elements in KRB document.")
 		r.elements = nil
 		r.roots = nil
 		return nil, r.config, nil
 	}
-
-	// Pre-allocate slice for elements, with some extra capacity for expanded components
 	r.elements = make([]render.RenderElement, initialElementCount, initialElementCount*2)
 
-	// First pass: Create RenderElement for each KRB element
+	// Initial properties that are not typically styled or inherited directly in the first pass
+	defaultTextAlignment := uint8(krb.LayoutAlignStart)
+	defaultIsVisible := true
+
 	for i := 0; i < initialElementCount; i++ {
 		renderEl := &r.elements[i]
 		krbElHeader := doc.Elements[i]
 
+		// Basic Initialization
 		renderEl.Header = krbElHeader
 		renderEl.OriginalIndex = i
 		renderEl.DocRef = doc
-
-		// Initialize with defaults
-		renderEl.BgColor = rl.Blank // Default transparent background
-		renderEl.FgColor = defaultForegroundColor
-		renderEl.BorderColor = defaultBorderColor
-		renderEl.BorderWidths = [4]uint8{defaultBorderWidth, defaultBorderWidth, defaultBorderWidth, defaultBorderWidth}
-		renderEl.Padding = [4]uint8{0, 0, 0, 0} // Default no padding
-		renderEl.TextAlignment = defaultTextAlignment
-		renderEl.IsVisible = defaultIsVisible
+		renderEl.BgColor = rl.Blank     // Default: transparent
+		renderEl.FgColor = rl.Blank     // Default: "unset", to be filled by style, direct, or inheritance
+		renderEl.BorderColor = rl.Blank // Default: "unset"
+		renderEl.BorderWidths = [4]uint8{0, 0, 0, 0}
+		renderEl.Padding = [4]uint8{0, 0, 0, 0}
+		renderEl.TextAlignment = defaultTextAlignment // Base default, can be overridden
+		renderEl.IsVisible = defaultIsVisible         // Base default, can be overridden
 		renderEl.IsInteractive = (krbElHeader.Type == krb.ElemTypeButton || krbElHeader.Type == krb.ElemTypeInput)
-		renderEl.ResourceIndex = render.InvalidResourceIndex // Default no resource
+		renderEl.ResourceIndex = render.InvalidResourceIndex
 
-		// Determine SourceElementName (for debugging/identification)
+		// Source Element Name for Debugging
 		elementIDString, _ := getStringValueByIdx(doc, renderEl.Header.ID)
 		var componentName string
-
 		if doc.CustomProperties != nil && i < len(doc.CustomProperties) {
 			componentName, _ = GetCustomPropertyValue(renderEl, componentNameConventionKey, doc)
 		}
-
 		if componentName != "" {
 			renderEl.SourceElementName = componentName
 		} else if elementIDString != "" {
@@ -127,92 +109,75 @@ func (r *RaylibRenderer) PrepareTree(
 			renderEl.SourceElementName = fmt.Sprintf("Type0x%X_Idx%d", renderEl.Header.Type, renderEl.OriginalIndex)
 		}
 
-		// Apply styles
+		// Styling Resolution Order (as per spec section 5)
+		// 5.1. Basic Init (done above)
+		// 5.2. Style Application
 		elementStyle, styleFound := findStyle(doc, krbElHeader.StyleID)
-
 		if styleFound {
-			applyStylePropertiesToElement(elementStyle.Properties, doc, renderEl)
+			r.applyStylePropertiesToElement(elementStyle.Properties, doc, renderEl)
 		} else if krbElHeader.StyleID != 0 && !(i == 0 && isAppElementPresent) {
-			log.Printf(
-				"Warn PrepareTree: Element %d (Name: '%s', Type: %X) has StyleID %d, but style was not found.",
-				i, renderEl.SourceElementName, krbElHeader.Type, krbElHeader.StyleID,
-			)
+			log.Printf("Warn PrepareTree: Element %s (Idx %d) has StyleID %d, but style was not found.",
+				renderEl.SourceElementName, i, krbElHeader.StyleID)
 		}
 
-		// Apply direct properties (override styles)
+		// 5.3. Direct Property Application (overrides style)
 		if len(doc.Properties) > i && len(doc.Properties[i]) > 0 {
-
-			if i == 0 && isAppElementPresent { // Special handling for App element's visual props
-				applyDirectVisualPropertiesToAppElement(doc.Properties[0], doc, renderEl)
+			if i == 0 && isAppElementPresent { // App element has some visual props for its RenderElement
+				r.applyDirectVisualPropertiesToAppElement(doc.Properties[0], doc, renderEl)
 			} else {
-				applyDirectPropertiesToElement(doc.Properties[i], doc, renderEl)
+				r.applyDirectPropertiesToElement(doc.Properties[i], doc, renderEl)
 			}
 		}
 
-		// Resolve text content and image source (from direct props or style)
-		resolveElementText(doc, renderEl, elementStyle, styleFound)
-		resolveElementImageSource(doc, renderEl, elementStyle, styleFound)
-		resolveEventHandlers(doc, renderEl) // Populate EventHandlers slice
+		// Resolve text and image source (might use values from style or direct props)
+		r.resolveElementTextAndImage(doc, renderEl, elementStyle, styleFound)
+
+		// 5.4. Contextual Default Resolution (e.g., borders)
+		r.applyContextualDefaults(renderEl)
+
+		// Event handlers (not styling, but part of element setup)
+		resolveEventHandlers(doc, renderEl) // This can stay here or move to utils
 	}
 
-	// Link children from the original KRB structure
-	kryUsageChildrenMap := make(map[int][]*render.RenderElement) // For component instances
-
-	if err := r.linkOriginalKrbChildren(initialElementCount, kryUsageChildrenMap); err != nil {
-		return nil, r.config, fmt.Errorf("PrepareTree: failed during initial child linking: %w", err)
+	// --- 4. Link Original KRB Children & Expand Components ---
+	kryUsageChildrenMap := make(map[int][]*render.RenderElement)
+	if err_link := r.linkOriginalKrbChildren(initialElementCount, kryUsageChildrenMap); err_link != nil {
+		return nil, r.config, fmt.Errorf("PrepareTree: failed during initial child linking: %w", err_link)
 	}
 
-	// Second pass: Expand components
-	nextMasterIndex := initialElementCount // Next available index in r.elements for new expanded elements
-
+	nextMasterIndex := initialElementCount
 	for i := 0; i < initialElementCount; i++ {
 		instanceElement := &r.elements[i]
 		componentName, _ := GetCustomPropertyValue(instanceElement, componentNameConventionKey, doc)
-
-		if componentName != "" { // This element is an instance of a component
-			compDef := r.findComponentDefinition(componentName) // Uses r.docRef
-
+		if componentName != "" {
+			compDef := r.findComponentDefinition(componentName)
 			if compDef != nil {
-				log.Printf(
-					"PrepareTree: Expanding component '%s' for instance '%s' (OriginalIndex: %d)",
-					componentName, instanceElement.SourceElementName, instanceElement.OriginalIndex,
-				)
 				instanceKryChildren := kryUsageChildrenMap[instanceElement.OriginalIndex]
-				// Pass r.elements by pointer to allow resizing
-				err := r.expandComponent(instanceElement, compDef, &r.elements, &nextMasterIndex, instanceKryChildren) // Uses r.docRef
-
-				if err != nil {
-					log.Printf(
-						"ERROR PrepareTree: Failed to expand component '%s' for instance '%s': %v",
-						componentName, instanceElement.SourceElementName, err,
-					)
+				err_expand := r.expandComponent(instanceElement, compDef, &r.elements, &nextMasterIndex, instanceKryChildren)
+				if err_expand != nil {
+					log.Printf("ERROR PrepareTree: Failed to expand component '%s' for instance '%s': %v", componentName, instanceElement.SourceElementName, err_expand)
 				}
 			} else {
-				log.Printf(
-					"Warn PrepareTree: Component definition for '%s' (instance '%s') not found.",
-					componentName, instanceElement.SourceElementName,
-				)
+				log.Printf("Warn PrepareTree: Component definition for '%s' (instance '%s') not found.", componentName, instanceElement.SourceElementName)
 			}
 		}
 	}
 
-	// Finalize tree structure (Parent pointers and root identification)
-	log.Println("PrepareTree: Finalizing element tree structure (setting Parent pointers and finding roots)...")
-	r.roots = nil // Reset roots
-	errBuild := r.finalizeTreeStructureAndRoots()
-
-	if errBuild != nil {
-		log.Printf("Error PrepareTree: Failed to finalize full element tree: %v", errBuild)
-		return nil, r.config, fmt.Errorf("failed to finalize full element tree: %w", errBuild)
+	// Finalize tree structure (Parent pointers and finding roots) *after* expansion
+	r.roots = nil
+	if err_build := r.finalizeTreeStructureAndRoots(); err_build != nil {
+		return nil, r.config, fmt.Errorf("failed to finalize full element tree: %w", err_build)
 	}
 
-	log.Printf(
-		"PrepareTree: Tree built successfully. Number of root nodes: %d. Total elements (including expanded): %d.",
-		len(r.roots), len(r.elements),
-	)
+	// --- 5. Resolve Property Inheritance ---
+	// This must happen *after* the full tree is linked and components are expanded,
+	// so parent properties are fully resolved before children try to inherit.
+	r.resolvePropertyInheritance()
 
+	// --- Done with Tree Preparation ---
+	log.Printf("PrepareTree: Tree built. Roots: %d. Total elements (incl. expanded): %d.", len(r.roots), len(r.elements))
 	for rootIdx, rootNode := range r.roots {
-		logElementTree(rootNode, 0, fmt.Sprintf("Root[%d]", rootIdx)) // logElementTree is in utils
+		logElementTree(rootNode, 0, fmt.Sprintf("Root[%d]", rootIdx))
 	}
 
 	return r.roots, r.config, nil
@@ -834,7 +799,8 @@ func (r *RaylibRenderer) PerformLayout(
 		elementIdentifier = fmt.Sprintf("Type0x%X_Idx%d_NoName", el.Header.Type, el.OriginalIndex)
 	}
 
-	isSpecificElementToLog := strings.Contains(elementIdentifier, "HelloWidget") || elementIdentifier == "Type0x1_Idx1"
+	//isSpecificElementToLog := strings.Contains(elementIdentifier, "HelloWidget") || elementIdentifier == "Type0x1_Idx1"
+	isSpecificElementToLog := false
 
 	if isSpecificElementToLog {
 		log.Printf(
@@ -1005,7 +971,7 @@ func (r *RaylibRenderer) PerformLayout(
 		}
 
 		if isSpecificElementToLog || el.Header.Type == krb.ElemTypeApp {
-			log.Printf("      S2d - Default/Explicit Size (Root/App): W:%.1f H:%.1f from screen/parent context or explicit", el.RenderW, el.RenderH)
+			// log.Printf("      S2d - Default/Explicit Size (Root/App): W:%.1f H:%.1f from screen/parent context or explicit", el.RenderW, el.RenderH)
 		}
 	} else {
 		el.RenderW = MaxF(0, desiredWidth)
@@ -1074,7 +1040,7 @@ func (r *RaylibRenderer) PerformLayout(
 		}
 		r.PerformLayoutChildren(el, childContentAreaX, childContentAreaY, childAvailableWidth, childAvailableHeight)
 
-		if !hasExplicitHeight && !isGrow && !isAbsolute {
+		if !isRootElement && !hasExplicitHeight && !isGrow && !isAbsolute {
 			maxChildExtentY := float32(0.0)
 			parentLayoutDir := el.Header.LayoutDirection()
 			isParentVertical := (parentLayoutDir == krb.LayoutDirColumn || parentLayoutDir == krb.LayoutDirColumnReverse)
@@ -1220,8 +1186,8 @@ func (r *RaylibRenderer) PerformLayoutChildren(
 		parentIdentifier = fmt.Sprintf("ParentType0x%X_Idx%d", parent.Header.Type, parent.OriginalIndex)
 	}
 
-	isParentSpecificToLog := strings.Contains(parentIdentifier, "HelloWidget") || parentIdentifier == "Type0x0_Idx0"
-
+	//isParentSpecificToLog := strings.Contains(parentIdentifier, "HelloWidget") || parentIdentifier == "Type0x0_Idx0"
+	isParentSpecificToLog := false
 	if isParentSpecificToLog {
 		log.Printf(
 			">>>>> PerformLayoutChildren for PARENT: %s (ContentOrigin: X:%.0f,Y:%.0f, AvailW:%.0f,AvailH:%.0f, LayoutByte:0x%02X)",

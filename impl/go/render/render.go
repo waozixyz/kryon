@@ -48,13 +48,19 @@ type RenderElement struct {
 	SourceElementName    string
 }
 
+
+
 type WindowConfig struct {
-	Width       int
-	Height      int
-	Title       string
-	Resizable   bool
-	ScaleFactor float32
-	DefaultBg   rl.Color
+	Width              int
+	Height             int
+	Title              string
+	Resizable          bool
+	ScaleFactor        float32
+	DefaultBg          rl.Color
+	DefaultFgColor     rl.Color // For root text color inheritance & final fallback
+	DefaultBorderColor rl.Color // For default border color if width is set but color isn't
+	DefaultFontSize    float32  // For root font size inheritance & final fallback
+	// DefaultFontFamily string // If you add font family support
 }
 
 // Renderer defines the core interface that all Kryon rendering backends must implement.
@@ -116,5 +122,9 @@ func DefaultWindowConfig() WindowConfig {
 		Resizable:   true,
 		ScaleFactor: 1.0,
 		DefaultBg:   rl.NewColor(30, 30, 30, 255),
+		DefaultFgColor:     rl.RayWhite,                   // White text on dark background
+		DefaultBorderColor: rl.Gray,                       // Neutral gray for borders
+		DefaultFontSize:    BaseFontSize,                  // Use the defined constant
+
 	}
 }

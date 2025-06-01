@@ -557,6 +557,15 @@ func (r *RaylibRenderer) renderElementRecursive(el *render.RenderElement, scale 
 	bottomBorder := scaledI32(el.BorderWidths[2], scale)
 	leftBorder := scaledI32(el.BorderWidths[3], scale)
 
+/*
+    if el.Header.Type == krb.ElemTypeApp {
+        log.Printf("DEBUG AppBorderDraw: Name='%s', OrigIdx=%d", el.SourceElementName, el.OriginalIndex)
+        log.Printf("  RenderRect: X:%.1f, Y:%.1f, W:%.1f, H:%.1f => renderW:%d, renderH:%d", renderXf, renderYf, renderWf, renderHf, renderW, renderH)
+        log.Printf("  Borders (scaledI32): T:%d, R:%d, B:%d, L:%d", topBorder, rightBorder, bottomBorder, leftBorder)
+        log.Printf("  BorderWidths (raw): T:%d, R:%d, B:%d, L:%d", el.BorderWidths[0], el.BorderWidths[1], el.BorderWidths[2], el.BorderWidths[3])
+        log.Printf("  BorderColor: %v", borderColor)
+    }
+*/
 	// Clamp borders if they exceed element size (to prevent overlap or negative content area)
 	clampedTop, clampedBottom := clampOpposingBorders(int(topBorder), int(bottomBorder), int(renderH))
 	clampedLeft, clampedRight := clampOpposingBorders(int(leftBorder), int(rightBorder), int(renderW))
