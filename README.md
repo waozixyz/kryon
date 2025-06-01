@@ -31,6 +31,8 @@ Detailed specifications for the Kryon formats can be found in the `docs/` direct
 
 * [`kry_source_spec.md`](docs/kry_source_spec.md): Specification for the human-readable `.kry` source file format used to define UIs.
 * [`krb_source_spec.md`](docs/krb_source_spec.md): Specification for the compiled `.krb` binary file format, detailing its structure and encoding.
+* [`kryon_runtime_styling.md`](docs/kryon_runtime_styling.md): Defines default styling values, contextual property resolution (e.g., for borders), and property inheritance rules for Kryon Runtimes. Ensures consistent UI rendering from KRB files.
+
 
 ## Development Setup
 
@@ -54,19 +56,19 @@ These tables show the completion status of various language/renderer implementat
 
 | Implementation | hello_world | button | image |
 |----------------|:-----------:|:------:|:-----:|
+| Go / Raylib    |     ✅        |     ✅     |  ✅   |
+| JS / Web       |     〰v0.3      |   〰️v0.3   |  〰️v0.3   |
 | C / Raylib     |     v0.3      |   ~v0.3   |  v0.3   |
 | C / Term       |     v0.2      |   ~v0.2   |  ❌   |
-| Go / Raylib    |     ✅        |   ✅   |  ✅   |
-| JS / Web       |     〰v0.3      |   〰️v0.3   |  〰️v0.3   |
 
 ### Widgets Status
 
 | Implementation | tab_bar |
 |----------------|:-------:|
-| C / Raylib     |    ❌   |
-| C / Term       |    ❌   |
 | Go / Raylib    |    ✅   |
 | JS / Web       |    ❌   |
+| C / Raylib     |    ❌   |
+| C / Term       |    ❌   |
 
 ## Build and Run
 
@@ -81,3 +83,55 @@ cd ../kryc
 # Compile a .kry file to .krb (outputting to the examples dir of this repo)
 # Example: compiling hello_world.kry
 ./kryc ../kryon/examples/hello_world.kry ../kryon/examples/hello_world.krb
+```
+
+## Running Examples with Implementations
+
+Once you have built a specific language implementation (e.g., the Go/Raylib renderer), you can run it against the `.krb` files in the main `examples/` directory.
+
+**1. Visual Rendering (General Examples):**
+
+Most implementations will have a primary executable that takes a `.krb` file path as an argument. Running this will render the UI visually.
+
+*   **Example (Go/Raylib):**
+    ```bash
+    # Navigate to the Go Raylib implementation directory
+    cd implementations/go/cmd/kryon-raylib/
+    
+    # Build the renderer
+    go build .
+    
+    # Run against an example .krb file
+    ./kryon-raylib ../../../examples/button.krb 
+    # Or for hello_world:
+    # ./kryon-raylib ../../../examples/hello_world.krb
+    ```
+    When running examples directly from the `examples/` folder this way, the UI will be **visually rendered according to the KRB specification**. However, event handlers (`onClick`, etc.) defined in the `.kry` source as string names (e.g., `onClick: "handleButtonClick"`) **will not be connected to any actual Go functions by default.** This means interactive elements like buttons will appear correctly but will not perform actions when clicked.
+
+**2. Testing Interactions (Implementation-Specific Examples):**
+
+To test the full functionality of interactive elements, including event handling and custom component logic, implementations provide their own dedicated example programs. These programs explicitly register the necessary event handlers or custom component handlers.
+
+*   **Location:** These are typically found within the specific implementation's directory structure. For example:
+    *   `implementations/go/examples/button/` might contain a `main.go` that specifically registers a `handleButtonClick` function for the `button.krb` example.
+    *   `implementations/go/examples/tabbar/` would similarly set up the `TabBarHandler` and any required event handlers for the tab bar example.
+
+*   **Running these specific examples:**
+    Follow the build and run instructions provided *within that implementation's example directory*. This usually involves building a separate small program that wires up the UI with the necessary runtime logic.
+
+    *   **Example (Go/Raylib Button with Interaction):**
+        ```bash
+        # Navigate to the specific example directory within the Go implementation
+        cd implementations/go/examples/button/
+        
+        # Build this specific example program
+        go build .
+        
+        # Run the example (it will typically load its associated .krb file automatically)
+        ./button 
+        ```
+    This ensures that when you click the button in `button.krb`, the `handleButtonClick` function defined in `implementations/go/examples/button/main.go` is actually executed.
+
+**In summary:**
+*   Use the main executable of an implementation (e.g., `kryon-raylib`) with `.krb` files from `examples/` for **quick visual testing and validation of KRB parsing/rendering**.
+*   Use the dedicated example programs *within each implementation's `examples/` subdirectories* (e.g., `implementations/go/examples/button/`) to **test full interactivity and custom component behavior**.
