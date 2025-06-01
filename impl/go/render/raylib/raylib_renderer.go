@@ -732,8 +732,10 @@ func PerformLayout(
 		elementIdentifier = fmt.Sprintf("Type0x%X_Idx%d_NoName", el.Header.Type, el.OriginalIndex)
 	}
 
-	isHelloWidgetRelated := strings.Contains(elementIdentifier, "HelloWidget") 
-	if isHelloWidgetRelated {
+	// Conditional logging for specific elements or types if needed for debugging
+	isSpecificElementToLog := strings.Contains(elementIdentifier, "HelloWidget") || elementIdentifier == "Type0x1_Idx1" // Example condition
+
+	if isSpecificElementToLog {
 		log.Printf(">>>>> PerformLayout for: %s (Type:0x%X, OrigIdx:%d) ParentCTX:%.0f,%.0f,%.0f,%.0f", elementIdentifier, el.Header.Type, el.OriginalIndex, parentContentX, parentContentY, parentContentW, parentContentH)
 		log.Printf("      Hdr: W:%d,H:%d,PosX:%d,PosY:%d,Layout:0x%02X(Abs:%t,Grow:%t)", el.Header.Width, el.Header.Height, el.Header.PosX, el.Header.PosY, el.Header.Layout, el.Header.LayoutAbsolute(), el.Header.LayoutGrow())
 	}
@@ -741,6 +743,7 @@ func PerformLayout(
 	isRootElement := (el.Parent == nil)
 	scaledUint16Local := func(v uint16) float32 { return float32(v) * scale }
 
+	// --- Step 1: Determine EXPLICIT Size (from Header.Width/Height or MaxWidth/MaxHeight properties) ---
 	hasExplicitWidth := false
 	desiredWidth := float32(0.0)
 	if el.Header.Width > 0 {
@@ -780,12 +783,13 @@ func PerformLayout(
 			}
 		}
 	}
-	if isHelloWidgetRelated {
+	if isSpecificElementToLog {
 		log.Printf("      S1 - Explicit Size: W:%.1f(exp:%t), H:%.1f(exp:%t)", desiredWidth, hasExplicitWidth, desiredHeight, hasExplicitHeight)
 	}
 
-	hPadding := ScaledF32(el.Padding[1], scale) + ScaledF32(el.Padding[3], scale)
-	vPadding := ScaledF32(el.Padding[0], scale) + ScaledF32(el.Padding[2], scale)
+	// --- Step 2: Apply INTRINSIC and DEFAULT SIZING ---
+	hPadding := ScaledF32(el.Padding[1], scale) + ScaledF32(el.Padding[3], scale) // Right + Left
+	vPadding := ScaledF32(el.Padding[0], scale) + ScaledF32(el.Padding[2], scale) // Top + Bottom
 	isGrow := el.Header.LayoutGrow()
 	isAbsolute := el.Header.LayoutAbsolute()
 
@@ -802,17 +806,18 @@ func PerformLayout(
 			}
 		}
 		finalFontSizePixels := MaxF(1.0, ScaledF32(uint8(elementFontSize), scale))
+
 		if !hasExplicitWidth {
 			textWidthMeasuredInPixels := float32(rl.MeasureText(el.Text, int32(finalFontSizePixels)))
 			desiredWidth = textWidthMeasuredInPixels + hPadding
-			if isHelloWidgetRelated {
+			if isSpecificElementToLog {
 				log.Printf("      S2a - Intrinsic W (Text): %.1f (text:%.1f, hPad:%.1f)", desiredWidth, textWidthMeasuredInPixels, hPadding)
 			}
 		}
 		if !hasExplicitHeight {
-			textHeightMeasuredInPixels := finalFontSizePixels
+			textHeightMeasuredInPixels := finalFontSizePixels // For single line
 			desiredHeight = textHeightMeasuredInPixels + vPadding
-			if isHelloWidgetRelated {
+			if isSpecificElementToLog {
 				log.Printf("      S2a - Intrinsic H (Text): %.1f (text:%.1f, vPad:%.1f)", desiredHeight, textHeightMeasuredInPixels, vPadding)
 			}
 		}
@@ -825,13 +830,13 @@ func PerformLayout(
 		}
 		if !hasExplicitWidth {
 			desiredWidth = texWidth*scale + hPadding
-			if isHelloWidgetRelated {
+			if isSpecificElementToLog {
 				log.Printf("      S2b - Intrinsic W (Image): %.1f (texW:%.1f, scale:%.1f, hPad:%.1f)", desiredWidth, texWidth, scale, hPadding)
 			}
 		}
 		if !hasExplicitHeight {
 			desiredHeight = texHeight*scale + vPadding
-			if isHelloWidgetRelated {
+			if isSpecificElementToLog {
 				log.Printf("      S2b - Intrinsic H (Image): %.1f (texH:%.1f, scale:%.1f, vPad:%.1f)", desiredHeight, texHeight, scale, vPadding)
 			}
 		}
@@ -840,7 +845,7 @@ func PerformLayout(
 	if !hasExplicitWidth && !isGrow && !isAbsolute {
 		if desiredWidth == 0 && (el.Header.Type == krb.ElemTypeContainer || el.Header.Type == krb.ElemTypeApp) {
 			desiredWidth = parentContentW
-			if isHelloWidgetRelated {
+			if isSpecificElementToLog {
 				log.Printf("      S2c - Default W (Container): %.1f from parent", desiredWidth)
 			}
 		}
@@ -848,7 +853,7 @@ func PerformLayout(
 	if !hasExplicitHeight && !isGrow && !isAbsolute {
 		if desiredHeight == 0 && (el.Header.Type == krb.ElemTypeContainer || el.Header.Type == krb.ElemTypeApp) {
 			desiredHeight = parentContentH
-			if isHelloWidgetRelated {
+			if isSpecificElementToLog {
 				log.Printf("      S2c - Default H (Container): %.1f from parent", desiredHeight)
 			}
 		}
@@ -857,28 +862,28 @@ func PerformLayout(
 	if isRootElement {
 		if !hasExplicitWidth && desiredWidth == 0 {
 			desiredWidth = parentContentW
-			if isHelloWidgetRelated {
+			if isSpecificElementToLog {
 				log.Printf("      S2d - Default W (Root): %.1f from screen", desiredWidth)
 			}
 		}
 		if !hasExplicitHeight && desiredHeight == 0 {
 			desiredHeight = parentContentH
-			if isHelloWidgetRelated {
+			if isSpecificElementToLog {
 				log.Printf("      S2d - Default H (Root): %.1f from screen", desiredHeight)
 			}
 		}
 	}
-	if isHelloWidgetRelated {
+	if isSpecificElementToLog {
 		log.Printf("      S2 - Final Desired: W:%.1f, H:%.1f", desiredWidth, desiredHeight)
 	}
+
 	el.RenderW = MaxF(0, desiredWidth)
 	el.RenderH = MaxF(0, desiredHeight)
-	if isHelloWidgetRelated {
+	if isSpecificElementToLog {
 		log.Printf("      S2 - Assigned RenderW/H: W:%.1f, H:%.1f", el.RenderW, el.RenderH)
 	}
 
-	el.RenderX = parentContentX
-	el.RenderY = parentContentY
+	// --- Step 3: Determine Base Render Position ---
 	if el.Header.LayoutAbsolute() {
 		offsetX := scaledUint16Local(el.Header.PosX)
 		offsetY := scaledUint16Local(el.Header.PosY)
@@ -889,11 +894,17 @@ func PerformLayout(
 			el.RenderX = parentContentX + offsetX
 			el.RenderY = parentContentY + offsetY
 		}
+	} else {
+		// For flow elements, initially position at parent's content origin.
+		// PerformLayoutChildren will adjust this based on flow.
+		el.RenderX = parentContentX
+		el.RenderY = parentContentY
 	}
-	if isHelloWidgetRelated {
-		log.Printf("      S3 - Position: X:%.1f, Y:%.1f (Abs:%t)", el.RenderX, el.RenderY, el.Header.LayoutAbsolute())
+	if isSpecificElementToLog {
+		log.Printf("      S3 - Initial Position: X:%.1f, Y:%.1f (Abs:%t)", el.RenderX, el.RenderY, el.Header.LayoutAbsolute())
 	}
 
+	// --- Step 4: Calculate Content Area for Children (relative to current el.RenderX/Y) ---
 	childPaddingTop := ScaledF32(el.Padding[0], scale)
 	childPaddingRight := ScaledF32(el.Padding[1], scale)
 	childPaddingBottom := ScaledF32(el.Padding[2], scale)
@@ -903,26 +914,33 @@ func PerformLayout(
 	childBorderBottom := ScaledF32(el.BorderWidths[2], scale)
 	childBorderLeft := ScaledF32(el.BorderWidths[3], scale)
 
+	// Child content area origin is relative to the element's own RenderX/Y
 	childContentAreaX := el.RenderX + childBorderLeft + childPaddingLeft
 	childContentAreaY := el.RenderY + childBorderTop + childPaddingTop
 	childAvailableWidth := el.RenderW - childBorderLeft - childBorderRight - childPaddingLeft - childPaddingRight
 	childAvailableHeight := el.RenderH - childBorderTop - childBorderBottom - childPaddingTop - childPaddingBottom
 	childAvailableWidth = MaxF(0, childAvailableWidth)
 	childAvailableHeight = MaxF(0, childAvailableHeight)
-	if isHelloWidgetRelated {
-		log.Printf("      S4 - Child Content Area: X:%.1f,Y:%.1f, W:%.1f,H:%.1f", childContentAreaX, childContentAreaY, childAvailableWidth, childAvailableHeight)
+
+	if isSpecificElementToLog {
+		log.Printf("      S4 - Child Content Area (relative to el.RenderX/Y): X_offset:%.1f, Y_offset:%.1f, W:%.1f,H:%.1f",
+			childBorderLeft+childPaddingLeft, childBorderTop+childPaddingTop, childAvailableWidth, childAvailableHeight)
+		log.Printf("           Absolute Child Content Origin: X:%.1f, Y:%.1f", childContentAreaX, childContentAreaY)
 	}
 
+	// --- Step 5 & 6: Layout Children & Content Hugging (for parent 'el') ---
 	if len(el.Children) > 0 {
-		if isHelloWidgetRelated {
+		if isSpecificElementToLog {
 			log.Printf("      S5 - Layout Children for %s...", elementIdentifier)
 		}
+		// Pass the absolute content area origin for children to be laid out within.
 		PerformLayoutChildren(el, childContentAreaX, childContentAreaY, childAvailableWidth, childAvailableHeight, scale, doc)
+
 		if !hasExplicitHeight && !isGrow && !isAbsolute {
 			maxChildExtentMainAxis := float32(0.0)
 			parentLayoutDir := el.Header.LayoutDirection()
 			isParentVertical := (parentLayoutDir == krb.LayoutDirColumn || parentLayoutDir == krb.LayoutDirColumnReverse)
-			parentGap := float32(0)
+			parentGap := float32(0) // TODO: Retrieve actual gap if used by el for its children
 			numFlowChildren := 0
 			for _, child := range el.Children {
 				if child != nil && !child.Header.LayoutAbsolute() {
@@ -932,6 +950,8 @@ func PerformLayout(
 					if isParentVertical {
 						maxChildExtentMainAxis += child.RenderH
 					} else {
+						// Child's RenderY is absolute screen coordinate.
+						// childContentAreaY is absolute screen coordinate of where children start for parent 'el'.
 						childRelativeY := child.RenderY - childContentAreaY
 						currentChildExtentY := childRelativeY + child.RenderH
 						if currentChildExtentY > maxChildExtentMainAxis {
@@ -947,25 +967,27 @@ func PerformLayout(
 			} else {
 				contentHeightFromChildren = maxChildExtentMainAxis + vPadding + childBorderTop + childBorderBottom
 			}
-			if contentHeightFromChildren > 0 && (desiredHeight == 0 || contentHeightFromChildren < desiredHeight || (el.Header.Type != krb.ElemTypeContainer && el.Header.Type != krb.ElemTypeApp)) {
-				if desiredHeight == 0 || contentHeightFromChildren < desiredHeight && (el.Header.Type != krb.ElemTypeContainer && el.Header.Type != krb.ElemTypeApp) {
+			if contentHeightFromChildren > 0 {
+				if desiredHeight == 0 || (contentHeightFromChildren < desiredHeight && (el.Header.Type != krb.ElemTypeContainer && el.Header.Type != krb.ElemTypeApp)) {
 					el.RenderH = contentHeightFromChildren
-					if isHelloWidgetRelated {
+					if isSpecificElementToLog {
 						log.Printf("      S6 - Content Hug H for %s: %.1f", elementIdentifier, el.RenderH)
 					}
 				} else if (el.Header.Type == krb.ElemTypeContainer || el.Header.Type == krb.ElemTypeApp) && contentHeightFromChildren < el.RenderH {
 					el.RenderH = contentHeightFromChildren
-					if isHelloWidgetRelated {
+					if isSpecificElementToLog {
 						log.Printf("      S6 - Content Shrink H for Container %s: %.1f", elementIdentifier, el.RenderH)
 					}
 				}
 			}
+			// Similar logic for Width if it's a horizontal flow parent that should hug width
 		}
 	}
-	if isHelloWidgetRelated {
-		log.Printf("      S5/6 - After Children/Hugging for %s: W:%.1f, H:%.1f", elementIdentifier, el.RenderW, el.RenderH)
+	if isSpecificElementToLog {
+		log.Printf("      S5/6 - After Children/Hugging for %s: W:%.1f, H:%.1f, X:%.1f, Y:%.1f", elementIdentifier, el.RenderW, el.RenderH, el.RenderX, el.RenderY)
 	}
 
+	// --- Step 7: Apply Min-Width/Height Constraints ---
 	if doc != nil && el.OriginalIndex < len(doc.Properties) && doc.Properties[el.OriginalIndex] != nil {
 		elementDirectProps := doc.Properties[el.OriginalIndex]
 		minWVal, minWType, _, minWErr := getNumericValueForSizeProp(elementDirectProps, krb.PropIDMinWidth, doc)
@@ -983,10 +1005,11 @@ func PerformLayout(
 			}
 		}
 	}
-	if isHelloWidgetRelated {
+	if isSpecificElementToLog {
 		log.Printf("      S7 - Min/Max Constraints for %s: W:%.1f, H:%.1f", elementIdentifier, el.RenderW, el.RenderH)
 	}
 
+	// --- Step 8: Final Fallback for Zero Size ---
 	el.RenderW = MaxF(0, el.RenderW)
 	if el.RenderW > 0 && el.RenderH == 0 {
 		if el.Header.Type == krb.ElemTypeContainer || el.Header.Type == krb.ElemTypeApp || el.BgColor.A > 0 || (el.BorderWidths[0]+el.BorderWidths[1]+el.BorderWidths[2]+el.BorderWidths[3] > 0) {
@@ -996,36 +1019,40 @@ func PerformLayout(
 			}
 			if finalMinHeight > 0 {
 				el.RenderH = finalMinHeight
-				if isHelloWidgetRelated {
+				if isSpecificElementToLog {
 					log.Printf("      S8 - Fallback Zero H for %s: %.1f", elementIdentifier, el.RenderH)
 				}
 			}
 		}
 	}
 	el.RenderH = MaxF(0, el.RenderH)
-	if isHelloWidgetRelated {
+
+	if isSpecificElementToLog {
 		log.Printf("<<<<< PerformLayout END for: %s -- Final Render: X:%.1f,Y:%.1f, W:%.1f,H:%.1f", elementIdentifier, el.RenderX, el.RenderY, el.RenderW, el.RenderH)
 	}
 }
 
 func PerformLayoutChildren(
 	parent *render.RenderElement,
-	parentClientOriginX, parentClientOriginY,
-	availableClientWidth, availableClientHeight float32,
+	parentClientOriginX, parentClientOriginY, // Absolute screen coordinates of where parent's content starts
+	availableClientWidth, availableClientHeight float32, // Available W/H in parent's content area
 	scale float32,
 	doc *krb.Document,
 ) {
 	if parent == nil || len(parent.Children) == 0 {
 		return
 	}
+
 	parentIdentifier := parent.SourceElementName
 	if parentIdentifier == "" {
 		parentIdentifier = fmt.Sprintf("ParentType0x%X_Idx%d", parent.Header.Type, parent.OriginalIndex)
 	}
 
-	isParentHelloWidgetRelated := strings.Contains(parentIdentifier, "HelloWidget")
-	if isParentHelloWidgetRelated {
-		log.Printf(">>>>> PerformLayoutChildren for PARENT: %s (Content: X:%.0f,Y:%.0f, AvailW:%.0f,AvailH:%.0f, Layout:0x%02X)",
+	// Conditional logging for specific elements or types if needed for debugging
+	isParentSpecificToLog := strings.Contains(parentIdentifier, "HelloWidget") || parentIdentifier == "Type0x0_Idx0" // Example: Log for App
+
+	if isParentSpecificToLog {
+		log.Printf(">>>>> PerformLayoutChildren for PARENT: %s (ContentOrigin: X:%.0f,Y:%.0f, AvailW:%.0f,AvailH:%.0f, LayoutByte:0x%02X)",
 			parentIdentifier, parentClientOriginX, parentClientOriginY, availableClientWidth, availableClientHeight, parent.Header.Layout)
 	}
 
@@ -1041,15 +1068,21 @@ func PerformLayoutChildren(
 			}
 		}
 	}
+	
+	scaledUint16Local := func(v uint16) float32 { return float32(v) * scale }
 
+
+	// --- Layout Flow Children ---
 	if len(flowChildren) > 0 {
 		layoutDirection := parent.Header.LayoutDirection()
-		layoutAlignment := parent.Header.LayoutAlignment()
-		crossAxisAlignment := parent.Header.LayoutCrossAlignment()
+		layoutAlignment := parent.Header.LayoutAlignment()       // Main axis alignment
+		crossAxisAlignment := parent.Header.LayoutCrossAlignment() // Cross axis alignment
 		isLayoutReversed := (layoutDirection == krb.LayoutDirRowReverse || layoutDirection == krb.LayoutDirColumnReverse)
 		isMainAxisHorizontal := (layoutDirection == krb.LayoutDirRow || layoutDirection == krb.LayoutDirRowReverse)
 
+		// Get Gap property for the parent
 		gapValue := float32(0)
+		// Check style first
 		if parentStyle, styleFound := findStyle(doc, parent.Header.StyleID); styleFound {
 			if gapProp, propFound := getStylePropertyValue(parentStyle, krb.PropIDGap); propFound {
 				if gVal, valOk := getShortValue(gapProp); valOk {
@@ -1057,6 +1090,7 @@ func PerformLayoutChildren(
 				}
 			}
 		}
+		// Check direct properties (can override style)
 		if doc != nil && parent.OriginalIndex < len(doc.Properties) && len(doc.Properties[parent.OriginalIndex]) > 0 {
 			for _, prop := range doc.Properties[parent.OriginalIndex] {
 				if prop.ID == krb.PropIDGap {
@@ -1073,21 +1107,24 @@ func PerformLayoutChildren(
 			totalGapSpace = gapValue * float32(len(flowChildren)-1)
 		}
 
-		mainAxisEffectiveSpaceForParent := MuxFloat32(isMainAxisHorizontal, availableClientWidth, availableClientHeight)
-		mainAxisEffectiveSpaceForElements := MaxF(0, mainAxisEffectiveSpaceForParent-totalGapSpace)
-		crossAxisEffectiveSizeForParent := MuxFloat32(isMainAxisHorizontal, availableClientHeight, availableClientWidth)
+		mainAxisEffectiveSpaceForParentLayout := MuxFloat32(isMainAxisHorizontal, availableClientWidth, availableClientHeight)
+		mainAxisEffectiveSpaceForElements := MaxF(0, mainAxisEffectiveSpaceForParentLayout-totalGapSpace)
+		crossAxisEffectiveSizeForParentLayout := MuxFloat32(isMainAxisHorizontal, availableClientHeight, availableClientWidth)
 
+		// Pass 1: Call PerformLayout on each flow child to determine its W/H.
+		// PerformLayout will calculate the child's size based on its own properties,
+		// intrinsic content, or parent's available space (availableClientWidth/Height).
+		// The X/Y set by PerformLayout at this stage are temporary (based on parentClientOriginX/Y).
 		for _, child := range flowChildren {
-			childIdentifier := child.SourceElementName
-			if childIdentifier == "" {
-				childIdentifier = fmt.Sprintf("ChildType0x%X_Idx%d", child.Header.Type, child.OriginalIndex)
+			if isParentSpecificToLog {
+				log.Printf("      PLC Pass 1 (Sizing) - Calling PerformLayout for child: %s", child.SourceElementName)
 			}
-			if isParentHelloWidgetRelated {
-				log.Printf("      PLC Pass 1 - PerformLayout for child: %s", childIdentifier)
-			}
+			// Pass the parent's content area origin and available space.
+			// PerformLayout for the child will use these if it defaults to parent size or for percentages.
 			PerformLayout(child, parentClientOriginX, parentClientOriginY, availableClientWidth, availableClientHeight, scale, doc)
 		}
 
+		// Pass 2: Calculate total fixed size and distribute space for growing children.
 		totalFixedSizeOnMainAxis := float32(0)
 		numberOfGrowChildren := 0
 		for _, child := range flowChildren {
@@ -1105,56 +1142,62 @@ func PerformLayoutChildren(
 			sizePerGrowChild = spaceAvailableForGrowingChildren / float32(numberOfGrowChildren)
 		}
 
-		totalFinalElementSizeOnMainAxis := float32(0)
+		// Pass 3: Apply grow sizes and cross-axis stretch to children.
+		totalFinalElementSizeOnMainAxis := float32(0) // Recalculate after grow/stretch
 		for _, child := range flowChildren {
-			childIdentifier := child.SourceElementName
-			if childIdentifier == "" {
-				childIdentifier = fmt.Sprintf("ChildType0x%X_Idx%d", child.Header.Type, child.OriginalIndex)
-			}
-
 			if child.Header.LayoutGrow() && sizePerGrowChild > 0 {
 				if isMainAxisHorizontal {
 					child.RenderW = sizePerGrowChild
 				} else {
 					child.RenderH = sizePerGrowChild
 				}
+				if isParentSpecificToLog {
+					log.Printf("      PLC Pass 3 (Grow) - Child %s grew to main-axis size: %.1f", child.SourceElementName, MuxFloat32(isMainAxisHorizontal, child.RenderW, child.RenderH))
+				}
 			}
 
+			// Cross-axis stretch
 			if crossAxisAlignment == krb.LayoutAlignStretch {
-				if isMainAxisHorizontal {
-					if child.RenderH == 0 && crossAxisEffectiveSizeForParent > 0 {
-						child.RenderH = crossAxisEffectiveSizeForParent
-						if isParentHelloWidgetRelated {
-							log.Printf("      PLC Pass 3 - Child %s stretched H to %.1f", childIdentifier, child.RenderH)
+				if isMainAxisHorizontal { // Main is Row, Cross is Column (Height)
+					// Only stretch if child doesn't have an explicit height from its Header.Height
+					// or if its current RenderH is still zero (meaning no intrinsic height was set).
+					// A more robust check would be `!childHasExplicitHeightProperty`.
+					if child.Header.Height == 0 && child.RenderH < crossAxisEffectiveSizeForParentLayout { // Or just child.RenderH == 0
+						child.RenderH = crossAxisEffectiveSizeForParentLayout
+						if isParentSpecificToLog {
+							log.Printf("      PLC Pass 3 (Stretch) - Child %s stretched H to %.1f", child.SourceElementName, child.RenderH)
 						}
 					}
-				} else {
-					if child.RenderW == 0 && crossAxisEffectiveSizeForParent > 0 {
-						child.RenderW = crossAxisEffectiveSizeForParent
-						if isParentHelloWidgetRelated {
-							log.Printf("      PLC Pass 3 - Child %s stretched W to %.1f", childIdentifier, child.RenderW)
+				} else { // Main is Column, Cross is Row (Width)
+					if child.Header.Width == 0 && child.RenderW < crossAxisEffectiveSizeForParentLayout { // Or just child.RenderW == 0
+						child.RenderW = crossAxisEffectiveSizeForParentLayout
+						if isParentSpecificToLog {
+							log.Printf("      PLC Pass 3 (Stretch) - Child %s stretched W to %.1f", child.SourceElementName, child.RenderW)
 						}
 					}
 				}
 			}
-
 			child.RenderW = MaxF(0, child.RenderW)
 			child.RenderH = MaxF(0, child.RenderH)
 			totalFinalElementSizeOnMainAxis += MuxFloat32(isMainAxisHorizontal, child.RenderW, child.RenderH)
 		}
 
+		// Calculate alignment offsets based on final sizes.
 		totalUsedSpaceWithGaps := totalFinalElementSizeOnMainAxis + totalGapSpace
 		startOffsetOnMainAxis, effectiveSpacingBetweenItems := calculateAlignmentOffsetsF(layoutAlignment,
-			mainAxisEffectiveSpaceForParent, totalUsedSpaceWithGaps,
+			mainAxisEffectiveSpaceForParentLayout, // Align within the parent's total available space for flow
+			totalUsedSpaceWithGaps,
 			len(flowChildren), isLayoutReversed, gapValue)
 
-		if isParentHelloWidgetRelated {
-			log.Printf("      PLC Details: mainEffSpaceForElems:%.0f, crossEffSizeForParent:%.0f", mainAxisEffectiveSpaceForElements, crossAxisEffectiveSizeForParent)
+		if isParentSpecificToLog {
+			log.Printf("      PLC Details: mainEffSpaceForElems:%.0f, crossEffSizeForParent:%.0f", mainAxisEffectiveSpaceForElements, crossAxisEffectiveSizeForParentLayout)
 			log.Printf("      PLC Details: totalFixed:%.0f, numGrow:%d, spaceForGrow:%.0f, sizePerGrow:%.0f", totalFixedSizeOnMainAxis, numberOfGrowChildren, spaceAvailableForGrowingChildren, sizePerGrowChild)
 			log.Printf("      PLC Details: totalFinalMainAxis:%.0f, totalUsedWithGaps:%.0f", totalFinalElementSizeOnMainAxis, totalUsedSpaceWithGaps)
 			log.Printf("      PLC Details: startOffMain:%.0f, effSpacing:%.0f", startOffsetOnMainAxis, effectiveSpacingBetweenItems)
 		}
 
+		// Pass 4: Position flow children correctly within parent's client area,
+		//         then apply their own Header.PosX/Y, then lay out their children.
 		currentMainAxisPosition := startOffsetOnMainAxis
 		childOrderIndices := make([]int, len(flowChildren))
 		for i := range childOrderIndices {
@@ -1166,15 +1209,11 @@ func PerformLayoutChildren(
 
 		for i, orderedChildIndex := range childOrderIndices {
 			child := flowChildren[orderedChildIndex]
-			childIdentifier := child.SourceElementName
-			if childIdentifier == "" {
-				childIdentifier = fmt.Sprintf("ChildType0x%X_Idx%d", child.Header.Type, child.OriginalIndex)
-			}
-
 			childMainAxisSizeValue := MuxFloat32(isMainAxisHorizontal, child.RenderW, child.RenderH)
 			childCrossAxisSizeValue := MuxFloat32(isMainAxisHorizontal, child.RenderH, child.RenderW)
-			crossAxisOffset := calculateCrossAxisOffsetF(crossAxisAlignment, crossAxisEffectiveSizeForParent, childCrossAxisSizeValue)
+			crossAxisOffset := calculateCrossAxisOffsetF(crossAxisAlignment, crossAxisEffectiveSizeForParentLayout, childCrossAxisSizeValue)
 
+			// Set base flow position relative to parentClientOriginX/Y
 			if isMainAxisHorizontal {
 				child.RenderX = parentClientOriginX + currentMainAxisPosition
 				child.RenderY = parentClientOriginY + crossAxisOffset
@@ -1182,9 +1221,45 @@ func PerformLayoutChildren(
 				child.RenderX = parentClientOriginX + crossAxisOffset
 				child.RenderY = parentClientOriginY + currentMainAxisPosition
 			}
-			if isParentHelloWidgetRelated {
-				log.Printf("      PLC Pass 4 - Pos Child %s: MainPos:%.0f, CrossOff:%.0f => X:%.0f,Y:%.0f (Child W:%.0f,H:%.0f)",
-					childIdentifier, currentMainAxisPosition, crossAxisOffset, child.RenderX, child.RenderY, child.RenderW, child.RenderH)
+
+			// Apply child's own Header.PosX/Y as an additional offset to its flow position
+			// This is for non-absolute elements that have PosX/PosY specified.
+			if !child.Header.LayoutAbsolute() && (child.Header.PosX != 0 || child.Header.PosY != 0) {
+				childOwnOffsetX := scaledUint16Local(child.Header.PosX)
+				childOwnOffsetY := scaledUint16Local(child.Header.PosY)
+				child.RenderX += childOwnOffsetX
+				child.RenderY += childOwnOffsetY
+				if isParentSpecificToLog || child.SourceElementName == "Type0x1_Idx1" { // Log for the specific container
+					log.Printf("      PLC Pass 4 - Child %s applied its own PosX/Y offset: dX:%.1f, dY:%.1f. New pos: X:%.1f,Y:%.1f",
+						child.SourceElementName, childOwnOffsetX, childOwnOffsetY, child.RenderX, child.RenderY)
+				}
+			}
+			
+			if isParentSpecificToLog {
+				log.Printf("      PLC Pass 4 - Positioned Child %s: Final X:%.0f,Y:%.0f (Child W:%.0f,H:%.0f)",
+					child.SourceElementName, child.RenderX, child.RenderY, child.RenderW, child.RenderH)
+			}
+
+			// Recursively layout this child's children, now that 'child' has its final frame.
+			if len(child.Children) > 0 {
+				// Calculate content area for 'child' based on its *final* RenderX/Y/W/H
+				childPaddingTop := ScaledF32(child.Padding[0], scale)
+				childPaddingRight := ScaledF32(child.Padding[1], scale)
+				childPaddingBottom := ScaledF32(child.Padding[2], scale)
+				childPaddingLeft := ScaledF32(child.Padding[3], scale)
+				childBorderTop := ScaledF32(child.BorderWidths[0], scale)
+				childBorderRight := ScaledF32(child.BorderWidths[1], scale)
+				childBorderBottom := ScaledF32(child.BorderWidths[2], scale)
+				childBorderLeft := ScaledF32(child.BorderWidths[3], scale)
+
+				grandChildContentAreaX := child.RenderX + childBorderLeft + childPaddingLeft
+				grandChildContentAreaY := child.RenderY + childBorderTop + childPaddingTop
+				grandChildAvailableWidth := child.RenderW - (childBorderLeft + childBorderRight + childPaddingLeft + childPaddingRight)
+				grandChildAvailableHeight := child.RenderH - (childBorderTop + childBorderBottom + childPaddingTop + childPaddingBottom)
+				grandChildAvailableWidth = MaxF(0, grandChildAvailableWidth)
+				grandChildAvailableHeight = MaxF(0, grandChildAvailableHeight)
+				
+				PerformLayoutChildren(child, grandChildContentAreaX, grandChildContentAreaY, grandChildAvailableWidth, grandChildAvailableHeight, scale, doc)
 			}
 
 			currentMainAxisPosition += childMainAxisSizeValue
@@ -1194,19 +1269,23 @@ func PerformLayoutChildren(
 		}
 	}
 
+	// --- Layout Absolute Children ---
+	// Absolute children are positioned relative to the parent's *own* RenderX/Y (not client origin).
+	// Their Header.PosX/Y are direct offsets from parent.RenderX/Y.
+	// PerformLayout for an absolute child handles this.
 	if len(absoluteChildren) > 0 {
 		for _, child := range absoluteChildren {
-			childIdentifier := child.SourceElementName
-			if childIdentifier == "" {
-				childIdentifier = fmt.Sprintf("ChildType0x%X_Idx%d", child.Header.Type, child.OriginalIndex)
+			if isParentSpecificToLog {
+				log.Printf("      PLC - Calling PerformLayout for Absolute Child: %s (Parent Frame: X:%.0f,Y:%.0f W:%.0f,H:%.0f)",
+					child.SourceElementName, parent.RenderX, parent.RenderY, parent.RenderW, parent.RenderH)
 			}
-			if isParentHelloWidgetRelated {
-				log.Printf("      PLC - Layout Abs Child: %s", childIdentifier)
-			}
+			// Pass the parent's full frame as the context for the absolute child.
+			// PerformLayout for the absolute child will use parent.RenderX/Y + child.Header.PosX/Y.
 			PerformLayout(child, parent.RenderX, parent.RenderY, parent.RenderW, parent.RenderH, scale, doc)
 		}
 	}
-	if isParentHelloWidgetRelated {
+
+	if isParentSpecificToLog {
 		log.Printf("<<<<< PerformLayoutChildren END for PARENT: %s", parentIdentifier)
 	}
 }
