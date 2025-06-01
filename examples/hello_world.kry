@@ -1,12 +1,12 @@
 style "appstyle" {
-    text_color: #FFFF00FF
-    background_color: #191919FF
+    text_color: "#FFFF00FF"
+    background_color: "#191919FF"
 }
 
 style "containerstyle" {
     border_width: 1
-    background_color: #191970FF
-    border_color: #00FFFFFF
+    background_color: "#191970FF"
+    border_color: "#00FFFFFF"
     layout: center
 }
 

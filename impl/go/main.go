@@ -11,7 +11,6 @@ import (
 	"github.com/waozixyz/kryon/impl/go/render" // Renderer interface
 	// Import the specific implementation (Raylib)
 	"github.com/waozixyz/kryon/impl/go/render/raylib"
-
 )
 
 // --- Placeholder Event Handler Functions ---

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log" // Import log for potential debug messages
+	"log"
 )
 
 // ReadDocument parses a KRB file from the given reader into a Document struct.
@@ -16,7 +16,7 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 	doc := &Document{}
 
 	// --- 1. Read Header ---
-	headerBuf := make([]byte, HeaderSize) // HeaderSize is now 48 for v0.4
+	headerBuf := make([]byte, HeaderSize)
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("krb read: failed to seek to header: %w", err)
 	}
@@ -30,43 +30,82 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 	doc.Header.Flags = ReadU16LE(headerBuf[6:8])
 	doc.Header.ElementCount = ReadU16LE(headerBuf[8:10])
 	doc.Header.StyleCount = ReadU16LE(headerBuf[10:12])
-	doc.Header.ComponentDefCount = ReadU16LE(headerBuf[12:14]) // New in v0.4
+	doc.Header.ComponentDefCount = ReadU16LE(headerBuf[12:14])
 	doc.Header.AnimationCount = ReadU16LE(headerBuf[14:16])
 	doc.Header.StringCount = ReadU16LE(headerBuf[16:18])
 	doc.Header.ResourceCount = ReadU16LE(headerBuf[18:20])
 	doc.Header.ElementOffset = ReadU32LE(headerBuf[20:24])
 	doc.Header.StyleOffset = ReadU32LE(headerBuf[24:28])
-	doc.Header.ComponentDefOffset = ReadU32LE(headerBuf[28:32]) // New in v0.4
+	doc.Header.ComponentDefOffset = ReadU32LE(headerBuf[28:32])
 	doc.Header.AnimationOffset = ReadU32LE(headerBuf[32:36])
 	doc.Header.StringOffset = ReadU32LE(headerBuf[36:40])
 	doc.Header.ResourceOffset = ReadU32LE(headerBuf[40:44])
 	doc.Header.TotalSize = ReadU32LE(headerBuf[44:48])
 
-	// Validate Magic Number
 	if !bytes.Equal(doc.Header.Magic[:], MagicNumber[:]) {
 		return nil, fmt.Errorf("krb read: invalid magic number %v", doc.Header.Magic)
 	}
-
-	// Store parsed version
 	doc.VersionMajor = uint8(doc.Header.Version & 0x00FF)
 	doc.VersionMinor = uint8(doc.Header.Version >> 8)
-
-	// Optional: Version check
-	if doc.Header.Version != ExpectedVersion { // ExpectedVersion should be 0.4
-		fmt.Printf("Warning: KRB version mismatch. File is %d.%d, reader expects %d.%d. Parsing continues...\n",
+	if doc.Header.Version != ExpectedVersion {
+		log.Printf("Warning: KRB version mismatch. File is %d.%d, reader expects %d.%d. Parsing continues...",
 			doc.VersionMajor, doc.VersionMinor, SpecVersionMajor, SpecVersionMinor)
 	}
 
-	// Basic Offset Sanity Checks (can be expanded)
+	// Basic Offset Sanity Checks
 	if doc.Header.ElementCount > 0 && doc.Header.ElementOffset < HeaderSize {
 		return nil, errors.New("krb read: element offset overlaps header")
 	}
 	if doc.Header.StyleCount > 0 && doc.Header.StyleOffset < HeaderSize {
 		return nil, errors.New("krb read: style offset overlaps header")
 	}
-	if doc.Header.ComponentDefCount > 0 && doc.Header.ComponentDefOffset < HeaderSize {
+	if doc.Header.ComponentDefCount > 0 && (doc.Header.Flags&FlagHasComponentDefs) != 0 && doc.Header.ComponentDefOffset < HeaderSize {
 		return nil, errors.New("krb read: component definition offset overlaps header")
 	}
+	if doc.Header.AnimationCount > 0 && doc.Header.AnimationOffset < HeaderSize {
+		return nil, errors.New("krb read: animation offset overlaps header")
+	}
+	if doc.Header.StringCount > 0 && doc.Header.StringOffset < HeaderSize {
+		return nil, errors.New("krb read: string offset overlaps header")
+	}
+	if doc.Header.ResourceCount > 0 && doc.Header.ResourceOffset < HeaderSize {
+		return nil, errors.New("krb read: resource offset overlaps header")
+	}
+
+
+	// --- Eagerly Read String Table ---
+	// It's often needed by other sections (like ComponentDef names) for meaningful logging or early validation.
+	if doc.Header.StringCount > 0 {
+		doc.Strings = make([]string, doc.Header.StringCount)
+		if _, err := r.Seek(int64(doc.Header.StringOffset), io.SeekStart); err != nil {
+			return nil, fmt.Errorf("krb read: failed to seek to strings offset %d: %w", doc.Header.StringOffset, err)
+		}
+		countBuf := make([]byte, 2)
+		if _, err := io.ReadFull(r, countBuf); err != nil {
+			return nil, fmt.Errorf("krb read: failed to read string table count: %w", err)
+		}
+		tableCount := ReadU16LE(countBuf)
+		if tableCount != doc.Header.StringCount {
+			log.Printf("Warning: KRB String Table count mismatch. Header: %d, Table: %d. Using header count.", doc.Header.StringCount, tableCount)
+		}
+		lenBuf := make([]byte, 1)
+		for i := uint16(0); i < doc.Header.StringCount; i++ {
+			if _, err := io.ReadFull(r, lenBuf); err != nil {
+				return nil, fmt.Errorf("krb read: failed to read string length for index %d: %w", i, err)
+			}
+			length := uint8(lenBuf[0])
+			if length > 0 {
+				strBuf := make([]byte, length)
+				if _, err := io.ReadFull(r, strBuf); err != nil {
+					return nil, fmt.Errorf("krb read: failed to read string data (len %d) for index %d: %w", length, i, err)
+				}
+				doc.Strings[i] = string(strBuf)
+			} else {
+				doc.Strings[i] = ""
+			}
+		}
+	}
+
 
 	// --- 2. Read Element Blocks (Main UI Tree) ---
 	if doc.Header.ElementCount > 0 {
@@ -252,21 +291,6 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 		compDefEntryHeaderBuf := make([]byte, 2) // NameIndex (1) + PropertyDefCount (1)
 		propDefHeaderBuf := make([]byte, 3)      // NameIndex (1) + ValueTypeHint (1) + DefaultValueSize (1)
 
-		// This value needs to be determined by the sum of all component def entry sizes,
-		// or by knowing the offset of the next section.
-		// This is a simplification assuming component defs are the last structural block before animations/strings.
-		var endOfComponentDefsSection uint32
-		if doc.Header.AnimationCount > 0 {
-			endOfComponentDefsSection = doc.Header.AnimationOffset
-		} else if doc.Header.StringCount > 0 {
-			endOfComponentDefsSection = doc.Header.StringOffset
-		} else if doc.Header.ResourceCount > 0 {
-			endOfComponentDefsSection = doc.Header.ResourceOffset
-		} else {
-			endOfComponentDefsSection = doc.Header.TotalSize
-		}
-
-
 		for i := uint16(0); i < doc.Header.ComponentDefCount; i++ {
 			compDef := &doc.ComponentDefinitions[i]
 
@@ -294,106 +318,95 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 					}
 				}
 			}
-
-            // Read RootElementTemplateData
-            // Calculate the size of the template data for *this specific* component definition.
-            // This is the most complex part without explicit size markers per definition.
-            currentPosAfterPropDefs, _ := r.Seek(0, io.SeekCurrent)
-            var sizeOfTemplateData uint32
-
-            if (i + 1) < doc.Header.ComponentDefCount {
-                // This is difficult: we need to know where the *next* component definition starts.
-                // The KRB spec does not store individual offsets for component defs, only the table start.
-                // A robust reader would need to fully parse the current template to know its size,
-                // or the KRB format would need to store the size of each comp def entry.
-
-                // For this implementation, we will make a simplifying assumption:
-                // We *cannot* reliably determine the end of the current template if there are more defs,
-                // unless we fully parse it, which this basic RootElementTemplateData []byte approach avoids.
-                // This part needs significant enhancement for multiple component definitions.
-                // For a single component definition, the calculation below is okay.
-                // We'll log an error and potentially read garbage if there are multiple.
-                if doc.Header.ComponentDefCount > 1 {
-                    log.Printf("Warning: KRB reader - Multiple component definitions found. Size calculation for RootElementTemplateData for component definition %d (of %d) might be incorrect. Only the last definition's template size can be reliably determined with current logic.", i, doc.Header.ComponentDefCount)
-                    // As a fallback, try to read just one ElementHeader and assume no complex children for now.
-                    // This is a HACK for demonstration.
-                    // tempElementHeaderForSize := make([]byte, ElementHeaderSize)
-                    // if _, err := r.Read(tempElementHeaderForSize); err == nil {
-                    //     sizeOfTemplateData = uint32(ElementHeaderSize) // Gross oversimplification
-                    //     // We need to seek back because we consumed bytes
-                    //     if _, seekErr := r.Seek(currentPosAfterPropDefs, io.SeekStart); seekErr != nil {
-                    //         return nil, fmt.Errorf("krb read: failed to seek back after peeking template header for comp_def %d: %w", i, seekErr)
-                    //     }
-                    // } else {
-                    //      return nil, fmt.Errorf("krb read: failed to peek template header for comp_def %d: %w", i, err)
-                    // }
-                    // A better HACK: if not the last, don't read template data for now to avoid corruption.
-                    sizeOfTemplateData = 0 // Avoid reading if not last and logic is complex
-                     log.Printf("Warning: Skipping RootElementTemplateData for component definition %d as it's not the last one and size determination is complex.", i)
-
-                } else { // This is the only/last component definition
-                     sizeOfTemplateData = endOfComponentDefsSection - uint32(currentPosAfterPropDefs)
-                }
-
-            } else { // This is the only/last component definition
-                sizeOfTemplateData = endOfComponentDefsSection - uint32(currentPosAfterPropDefs)
-            }
-
-            if int64(sizeOfTemplateData) < 0 { // Check for negative size
-                 return nil, fmt.Errorf("krb read: calculated negative template size (%d) for component definition %d ('%s'). Offsets/logic error.", int64(sizeOfTemplateData), i, doc.Strings[compDef.NameIndex])
-            }
-
-			if sizeOfTemplateData > 0 {
-				compDef.RootElementTemplateData = make([]byte, sizeOfTemplateData)
-				if _, err := io.ReadFull(r, compDef.RootElementTemplateData); err != nil {
-					return nil, fmt.Errorf("krb read: failed to read root element template data (size %d) for comp_def %d: %w", sizeOfTemplateData, i, err)
-				}
+			
+			// The stream 'r' is now positioned at the start of RootElementTemplateData for component 'i'.
+			// We use calculateAndReadKrbElementTree to parse this self-contained tree.
+			// This function will read from 'r', determine the tree's size, and return the bytes.
+			// 'r' will be advanced past the template data by this call.
+			var compDefNameForLog string
+			if int(compDef.NameIndex) < len(doc.Strings) {
+				compDefNameForLog = doc.Strings[compDef.NameIndex]
 			} else {
-                // This can happen if sizeOfTemplateData was 0 due to the multi-def hack or actual zero size
-                compDef.RootElementTemplateData = nil
-                if sizeOfTemplateData == 0 && !(doc.Header.ComponentDefCount > 1 && i < doc.Header.ComponentDefCount -1) { // Don't log for the multi-def hack skip
-				    log.Printf("Warning: RootElementTemplateData for component definition %d ('%s') is empty (size %d).", i, doc.Strings[compDef.NameIndex], sizeOfTemplateData)
-                }
+				compDefNameForLog = fmt.Sprintf("UnknownName(Index:%d)", compDef.NameIndex)
 			}
+			
+			// log.Printf("Debug: Reading RootElementTemplateData for CompDef %d ('%s')", i, compDefNameForLog)
+			_, templateDataBytes, err := calculateAndReadKrbElementTree(r)
+			if err != nil {
+				return nil, fmt.Errorf("krb read: comp_def '%s' (index %d), error processing RootElementTemplateData: %w", compDefNameForLog, i, err)
+			}
+			compDef.RootElementTemplateData = templateDataBytes
+			// log.Printf("Debug: Read RootElementTemplateData for CompDef %d ('%s'), size %d bytes. Reader now at offset %d.", i, compDefNameForLog, templateSizeBytes, currentOffset)
 		}
 	}
 
+
 	// --- 5. Read Animation Table ---
-	// (Positioned after Component Defs in KRB v0.4 spec, but reading order depends on seeks)
 	if doc.Header.AnimationCount > 0 {
 		if _, err := r.Seek(int64(doc.Header.AnimationOffset), io.SeekStart); err != nil {
 			return nil, fmt.Errorf("krb read: failed to seek to animation offset %d: %w", doc.Header.AnimationOffset, err)
 		}
-		log.Println("Warning: KRB Animation Table found but parsing is not yet implemented.")
-		// Placeholder: Skip reading animation data for now.
-		// To correctly skip, you would need to know the total size of the animation section.
-		// For now, subsequent seeks will handle positioning.
+		
+		var endOfAnimationSection uint32
+		// Determine end of animation section by finding the start of the next known section,
+		// or defaulting to TotalSize if it's the last one.
+		// This requires careful ordering if sections are optional.
+		nextSectionOffset := doc.Header.TotalSize // Default to end of file
+		if doc.Header.StringCount > 0 && doc.Header.StringOffset > doc.Header.AnimationOffset && doc.Header.StringOffset < nextSectionOffset {
+			nextSectionOffset = doc.Header.StringOffset
+		}
+		if doc.Header.ResourceCount > 0 && doc.Header.ResourceOffset > doc.Header.AnimationOffset && doc.Header.ResourceOffset < nextSectionOffset {
+			nextSectionOffset = doc.Header.ResourceOffset
+		}
+		// If ComponentDefs are after Animations (unlikely by spec order, but for robustness):
+        if doc.Header.ComponentDefCount > 0 && (doc.Header.Flags&FlagHasComponentDefs) != 0 && doc.Header.ComponentDefOffset > doc.Header.AnimationOffset && doc.Header.ComponentDefOffset < nextSectionOffset {
+             nextSectionOffset = doc.Header.ComponentDefOffset
+        }
+
+
+		endOfAnimationSection = nextSectionOffset
+		animationSectionSize := endOfAnimationSection - doc.Header.AnimationOffset
+
+		if int64(animationSectionSize) < 0 { // Check for negative size
+			return nil, fmt.Errorf("krb read: calculated negative animation section size (%d). Offsets/logic error.", int64(animationSectionSize))
+		}
+
+		if animationSectionSize > 0 {
+			doc.Animations = make([]byte, animationSectionSize) // Store as raw blob for now
+			if _, err := io.ReadFull(r, doc.Animations); err != nil {
+				return nil, fmt.Errorf("krb read: failed to read animation table (size %d): %w", animationSectionSize, err)
+			}
+			log.Printf("Warning: KRB Animation Table found (%d animations, %d bytes) but detailed parsing is not yet implemented. Read as raw blob.", doc.Header.AnimationCount, animationSectionSize)
+		} else if animationSectionSize == 0 && doc.Header.AnimationCount > 0 {
+			log.Printf("Warning: KRB Animation Table header indicates %d animations, but calculated section size is 0.", doc.Header.AnimationCount)
+		}
 	}
 
-	// --- 6. Read String Table ---
-	if doc.Header.StringCount > 0 {
+	// --- 6. Read String Table (if not already read) ---
+	// String table might have been read earlier if ComponentDefs needed it.
+	if doc.Strings == nil && doc.Header.StringCount > 0 {
 		doc.Strings = make([]string, doc.Header.StringCount)
 		if _, err := r.Seek(int64(doc.Header.StringOffset), io.SeekStart); err != nil {
-			return nil, fmt.Errorf("krb read: failed to seek to strings offset %d: %w", doc.Header.StringOffset, err)
+			return nil, fmt.Errorf("krb read: failed to seek to strings offset %d (fallback): %w", doc.Header.StringOffset, err)
 		}
 		countBuf := make([]byte, 2)
 		if _, err := io.ReadFull(r, countBuf); err != nil {
-			return nil, fmt.Errorf("krb read: failed to read string table count: %w", err)
+			return nil, fmt.Errorf("krb read: failed to read string table count (fallback): %w", err)
 		}
 		tableCount := ReadU16LE(countBuf)
 		if tableCount != doc.Header.StringCount {
-			log.Printf("Warning: KRB String Table count mismatch. Header: %d, Table: %d. Using header count.", doc.Header.StringCount, tableCount)
+			log.Printf("Warning: KRB String Table count mismatch (fallback). Header: %d, Table: %d. Using header count.", doc.Header.StringCount, tableCount)
 		}
 		lenBuf := make([]byte, 1)
 		for i := uint16(0); i < doc.Header.StringCount; i++ {
 			if _, err := io.ReadFull(r, lenBuf); err != nil {
-				return nil, fmt.Errorf("krb read: failed to read string length for index %d: %w", i, err)
+				return nil, fmt.Errorf("krb read: failed to read string length for index %d (fallback): %w", i, err)
 			}
 			length := uint8(lenBuf[0])
 			if length > 0 {
 				strBuf := make([]byte, length)
 				if _, err := io.ReadFull(r, strBuf); err != nil {
-					return nil, fmt.Errorf("krb read: failed to read string data (len %d) for index %d: %w", length, i, err)
+					return nil, fmt.Errorf("krb read: failed to read string data (len %d) for index %d (fallback): %w", length, i, err)
 				}
 				doc.Strings[i] = string(strBuf)
 			} else {
@@ -401,6 +414,7 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 			}
 		}
 	}
+
 
 	// --- 7. Read Resource Table ---
 	if doc.Header.ResourceCount > 0 {
@@ -449,21 +463,154 @@ func ReadDocument(r io.ReadSeeker) (*Document, error) {
 			}
 		}
 	}
+	return doc, nil
+}
 
-	// --- Final Check ---
-	// This check might be misleading if sections like Animations or ComponentDefs with complex internal structures
-	// are not fully read/skipped by their exact byte count.
-	// For now, let's comment it out to avoid false positives until all sections are robustly read.
-	/*
-	finalPos, err := r.Seek(0, io.SeekCurrent)
+
+// calculateAndReadKrbElementTree reads a self-contained KRB element tree from the stream.
+// It determines the total size of this tree (root element + all its descendants within the tree)
+// by parsing its structure, then reads the entire tree into a byte slice.
+// The input stream 'r' is expected to be positioned at the start of the root element's header.
+// After successful execution, 'r' will be positioned immediately after the parsed element tree.
+func calculateAndReadKrbElementTree(r io.ReadSeeker) (totalTreeSize uint32, treeData []byte, err error) {
+	startOffsetOfTree, err := r.Seek(0, io.SeekCurrent)
 	if err != nil {
-		log.Printf("Warning: Could not verify final read position after parsing: %v", err)
-	} else {
-		if uint32(finalPos) != doc.Header.TotalSize {
-			log.Printf("Warning: Final read position %d does not match header TotalSize %d. File may be corrupt or reader incomplete.", finalPos, doc.Header.TotalSize)
+		return 0, nil, fmt.Errorf("calculateAndReadKrbElementTree: failed to get start offset: %w", err)
+	}
+
+	// This map stores the calculated size of each element block encountered within this tree.
+	// Key: offset of the element's header *relative to startOffsetOfTree*.
+	// Value: size of that element *block* (header, props, events, anims, childrefs).
+	elementBlockSizes := make(map[uint32]uint32)
+
+	// Queue of element offsets (relative to startOffsetOfTree) to process.
+	// These offsets point to the headers of elements within the tree.
+	processingQueue := []uint32{0} // Start with the root element at relative offset 0.
+	
+	// Tracks the maximum relative offset reached by the end of any processed element block.
+	// This will determine the total size of the serialized tree.
+	maxRelativeExtent := uint32(0)
+
+	// Temp buffers
+	headerBuf := make([]byte, ElementHeaderSize)
+	propHeaderBuf := make([]byte, 3)
+	childRefBufItem := make([]byte, ChildRefSize)
+
+	for len(processingQueue) > 0 {
+		currentElementRelativeOffset := processingQueue[0]
+		processingQueue = processingQueue[1:]
+
+		// If we've already calculated the size for this element block, skip.
+		if _, visited := elementBlockSizes[currentElementRelativeOffset]; visited {
+			continue
+		}
+
+		// Seek to the start of the current element's header within the tree.
+		if _, err := r.Seek(startOffsetOfTree+int64(currentElementRelativeOffset), io.SeekStart); err != nil {
+			return 0, nil, fmt.Errorf("calculateAndReadKrbElementTree: seek to element at rel_offset %d failed: %w", currentElementRelativeOffset, err)
+		}
+
+		var currentElementBlockSize uint32 = 0
+
+		// Read Element Header
+		bytesRead, err := io.ReadFull(r, headerBuf)
+		if err != nil {
+			// If this is the first element (root) and we get EOF, the tree is empty/invalid.
+			if currentElementRelativeOffset == 0 && (err == io.EOF || err == io.ErrUnexpectedEOF) {
+				return 0, nil, fmt.Errorf("calculateAndReadKrbElementTree: tree is empty or header read failed for root: %w", err)
+			}
+			// If it's not the root, an EOF here might mean a child offset pointed beyond valid data.
+			return 0, nil, fmt.Errorf("calculateAndReadKrbElementTree: reading header at rel_offset %d failed: %w", currentElementRelativeOffset, err)
+		}
+		currentElementBlockSize += uint32(bytesRead)
+
+		var elemHdr ElementHeader // Only need counts for size calculation
+		elemHdr.PropertyCount = headerBuf[12]
+		elemHdr.ChildCount = headerBuf[13]
+		elemHdr.EventCount = headerBuf[14]
+		elemHdr.AnimationCount = headerBuf[15]
+		elemHdr.CustomPropCount = headerBuf[16]
+
+		// Size of Standard Properties
+		for j := uint8(0); j < elemHdr.PropertyCount; j++ {
+			if _, err := io.ReadFull(r, propHeaderBuf); err != nil { return 0, nil, fmt.Errorf("calc: std_prop header read failed: %w", err) }
+			currentElementBlockSize += 3
+			propDataSize := propHeaderBuf[2]
+			if propDataSize > 0 {
+				if _, err := r.Seek(int64(propDataSize), io.SeekCurrent); err != nil { return 0, nil, fmt.Errorf("calc: std_prop seek data failed: %w", err) }
+				currentElementBlockSize += uint32(propDataSize)
+			}
+		}
+		// Size of Custom Properties
+		for j := uint8(0); j < elemHdr.CustomPropCount; j++ {
+			if _, err := io.ReadFull(r, propHeaderBuf); err != nil { return 0, nil, fmt.Errorf("calc: custom_prop header read failed: %w", err) }
+			currentElementBlockSize += 3
+			propDataSize := propHeaderBuf[2]
+			if propDataSize > 0 {
+				if _, err := r.Seek(int64(propDataSize), io.SeekCurrent); err != nil { return 0, nil, fmt.Errorf("calc: custom_prop seek data failed: %w", err) }
+				currentElementBlockSize += uint32(propDataSize)
+			}
+		}
+		// Size of Events
+		eventsBlockSize := uint32(elemHdr.EventCount) * uint32(EventFileEntrySize)
+		if _, err := r.Seek(int64(eventsBlockSize), io.SeekCurrent); err != nil { return 0, nil, fmt.Errorf("calc: events seek failed: %w", err) }
+		currentElementBlockSize += eventsBlockSize
+		// Size of Animation Refs
+		animRefsBlockSize := uint32(elemHdr.AnimationCount) * uint32(AnimationRefSize)
+		if _, err := r.Seek(int64(animRefsBlockSize), io.SeekCurrent); err != nil { return 0, nil, fmt.Errorf("calc: anim_refs seek failed: %w", err) }
+		currentElementBlockSize += animRefsBlockSize
+
+		// Add children from ChildRefs to the queue and include ChildRef block size
+		if elemHdr.ChildCount > 0 {
+			for j := uint8(0); j < elemHdr.ChildCount; j++ {
+				if _, err := io.ReadFull(r, childRefBufItem); err != nil { return 0, nil, fmt.Errorf("calc: child_ref read failed: %w", err) }
+				currentElementBlockSize += uint32(ChildRefSize) // Size of the ChildRef entry itself
+				
+				childRelOffsetFromParentHeader := ReadU16LE(childRefBufItem)
+				// The child's offset relative to the *start of the entire tree*
+				childActualTreeRelativeOffset := currentElementRelativeOffset + uint32(childRelOffsetFromParentHeader)
+				
+				// Add to queue only if not already processed (or scheduled)
+				// This check isn't strictly necessary with the `elementBlockSizes` map check,
+				// but good for clarity if queue could have duplicates from complex structures.
+				if _, visited := elementBlockSizes[childActualTreeRelativeOffset]; !visited {
+					// Ensure not already in queue to prevent redundant processing if graph-like refs (though KRB is tree-like)
+					inQueue := false
+					for _, off := range processingQueue {
+						if off == childActualTreeRelativeOffset {
+							inQueue = true
+							break
+						}
+					}
+					if !inQueue {
+						processingQueue = append(processingQueue, childActualTreeRelativeOffset)
+					}
+				}
+			}
+		}
+		
+		elementBlockSizes[currentElementRelativeOffset] = currentElementBlockSize
+		currentElementEndRelativeOffset := currentElementRelativeOffset + currentElementBlockSize
+		if currentElementEndRelativeOffset > maxRelativeExtent {
+			maxRelativeExtent = currentElementEndRelativeOffset
 		}
 	}
-	*/
 
-	return doc, nil
+	totalTreeSize = maxRelativeExtent
+
+	// Now that total size is known, read the data block.
+	treeData = make([]byte, totalTreeSize)
+	if _, err := r.Seek(startOffsetOfTree, io.SeekStart); err != nil {
+		return 0, nil, fmt.Errorf("calculateAndReadKrbElementTree: final seek to re-read tree data failed: %w", err)
+	}
+	if _, err := io.ReadFull(r, treeData); err != nil {
+		return 0, nil, fmt.Errorf("calculateAndReadKrbElementTree: final read of tree data (size %d) failed: %w", totalTreeSize, err)
+	}
+	
+	// Critical: Ensure the main reader 'r' is positioned *after* this tree.
+	if _, err := r.Seek(startOffsetOfTree+int64(totalTreeSize), io.SeekStart); err != nil {
+		return 0, nil, fmt.Errorf("calculateAndReadKrbElementTree: final seek to position reader after tree failed: %w", err)
+	}
+
+	return totalTreeSize, treeData, nil
 }

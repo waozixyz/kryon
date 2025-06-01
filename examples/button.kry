@@ -1,7 +1,7 @@
 style "base" {
-    background_color: #191919FF
-    text_color: #FFFF00FF 
-    border_color: #00FFFFFF 
+    background_color: "#191919FF"
+    text_color: "#FFFF00FF"
+    border_color: "#00FFFFFF"
     border_width: 1
 }
 
@@ -20,7 +20,7 @@ App {
 
         text: "Click Me!"
         text_alignment: center
-        background_color: #404080FF
+        background_color: "#404080FF"
 
         onClick: "handleButtonClick"
     }
