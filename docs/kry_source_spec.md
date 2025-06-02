@@ -4,8 +4,6 @@
 
 The Kryon Source Language (`.kry`) is a human-readable, text-based language designed for defining user interfaces. It prioritizes simplicity and expressiveness, allowing developers to describe UI structure, styling, and basic interactions. `.kry` files are processed by a Kryon Compiler (e.g., `kryonc`) to produce the compact Kryon Binary Format (`.krb`) for deployment on target systems. The runtime environment then interprets the `.krb` file to render the UI and handle component-specific logic.
 
-This document specifies version 1.0 of the `.kry` language.
-
 ## 2. Design Goals
 
 *   **Readability:** Syntax should be clear and easy to understand.
