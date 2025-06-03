@@ -25,13 +25,14 @@ App {
         id: "main_content_area"
         style: "content_panel_style"
         layout: grow center # Let this container grow vertically and center its content
-
+        width: 100%
         # --- Page Containers ---
         Container {
             id: "page_home"
             layout: center # Center the child Text element
             Text {
                 text: "Home Page Content"
+                text_alignment: center
                 font_size: 18
             }
         }
@@ -40,6 +41,7 @@ App {
             visible: false
             layout: center # Center the child Text element
             Text {
+                text_alignment: center
                 text: "Search Results Area"
                 font_size: 18
             }
@@ -50,6 +52,7 @@ App {
             layout: center # Center the child Text element
             Text {
                 text: "Profile Page Details"
+                text_alignment: center
                 font_size: 18
             }
         }
