@@ -56,10 +56,10 @@ These tables show the completion status of various language/renderer implementat
 
 | Implementation | hello_world | button | image |
 |----------------|:-----------:|:------:|:-----:|
-| Go / Raylib    |     ✅        |     ✅     |  ✅   |
-| JS / Web       |     〰v0.3      |   〰️v0.3   |  〰️v0.3   |
-| C / Raylib     |     v0.3      |   ~v0.3   |  v0.3   |
-| C / Term       |     v0.2      |   ~v0.2   |  ❌   |
+| Go / Raylib    |     ✅      |     ✅     |  ✅   |
+| JS / Web       |     〰v0.3   |   〰️v0.3   |  〰️v0.3   |
+| C / Raylib     |      ✅      |   ✅   |  ✅   |
+| C / Term       |     v0.2     |   ~v0.2   |  ❌   |
 
 ### Widgets Status
 
