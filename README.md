@@ -59,7 +59,7 @@ These tables show the completion status of various language/renderer implementat
 | Go / Raylib    |     ✅      |     ✅     |  ✅   |
 | JS / Web       |     〰v0.3   |   〰️v0.3   |  〰️v0.3   |
 | C / Raylib     |      ✅      |   ✅   |  ✅   |
-| C / Term       |     v0.2     |   ~v0.2   |  ❌   |
+| C / Term       |     ✅     |   ~   |  ❌   |
 
 ### Widgets Status
 
@@ -67,7 +67,7 @@ These tables show the completion status of various language/renderer implementat
 |----------------|:-------:|
 | Go / Raylib    |    ✅   |
 | JS / Web       |    ❌   |
-| C / Raylib     |    ❌   |
+| C / Raylib     |    ~   |
 | C / Term       |    ❌   |
 
 ## Build and Run
