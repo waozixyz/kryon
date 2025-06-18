@@ -124,7 +124,6 @@ Standard UI building blocks. Elements are defined using `ElementName { ... }` or
 *   **`Button`**: An interactive element that triggers an action on click. Maps to `ELEM_TYPE_BUTTON`.
 *   **`Input`**: Allows user text input. Maps to `ELEM_TYPE_INPUT`.
 *   *(Other elements like `Canvas`, `List`, `Grid`, `Scrollable`, `Video` can be defined, corresponding to standard `ELEM_TYPE_*` in KRB)*
-
 ## 5. Properties
 
 Properties modify the appearance or behavior of an element. They are specified within the element's block or on the same line as the element declaration. These generally map to standard KRB properties or are handled as described in Section 8 (Component Definition).
@@ -143,6 +142,48 @@ Properties modify the appearance or behavior of an element. They are specified w
         ```
         *   The last property on the line does not require a trailing semicolon before the closing brace `}` if the line ends the element definition.
         *   Whitespace around the colon `:` and semicolon `;` is flexible but recommended for readability.
+    
+    *   **Pseudo-selectors:** Modifiers that apply properties conditionally based on element state. Use CSS-like syntax with `&:` prefix.
+        ```kry
+        Button {
+            background_color: "#404080FF"
+            border_color: "#0099FFFF"
+            text: "Click Me"
+            
+            &:hover {
+                background_color: "#5050A0FF"
+                border_color: "#00CCFFFF"
+                cursor: "pointer"
+            }
+            
+            &:active {
+                background_color: "#303060FF"
+                border_color: "#0066CCFF"
+            }
+            
+            &:focus {
+                border_color: "#FFFF00FF"
+                border_width: 2
+            }
+            
+            &:disabled {
+                background_color: "#808080FF"
+                text_color: "#CCCCCCFF"
+                cursor: "default"
+            }
+        }
+        ```
+
+*   **Pseudo-selector Details:**
+    *   **`:hover`** - Applied when the mouse cursor is over the element
+    *   **`:active`** - Applied when the element is being pressed/clicked down
+    *   **`:focus`** - Applied when the element has keyboard focus (for inputs, buttons)
+    *   **`:disabled`** - Applied when the element is disabled and non-interactive
+    *   **`:checked`** - Applied when a checkbox or radio button is checked
+    *   **Precedence:** Pseudo-selector properties override base properties when the state is active. Later pseudo-selectors in the same block override earlier ones if multiple states are active simultaneously.
+    *   **Combining:** Multiple pseudo-selectors can be combined (e.g., `&:hover:disabled` for hover state when disabled)
+    *   **KRB Mapping:** Pseudo-selector properties are compiled as separate property sets with state flags in the KRB format for runtime interpretation.
+
 *   **Values:**
     *   **Strings:** Enclosed in double quotes (`"Hello"`).
     *   **Numbers (Integers and Floating-Point for Percentages):**
@@ -167,22 +208,69 @@ Properties modify the appearance or behavior of an element. They are specified w
         ```
 
 *   **Standard Properties:** (Examples - Correspond to KRB `PROP_ID_*`)
-    *   `id`: String identifier for referencing the element. Passed to KRB Element Header `ID` field (as string index).
-    *   `pos_x`, `pos_y`: Integer coordinates. Passed to KRB Element Header.
-    *   `width`, `height`: Integer (pixels) or Percentage String (`"50%"`). Defines size constraints. Maps to KRB `PROP_ID_MaxWidth`/`MaxHeight`. Final size often influenced by runtime layout.
-    *   `min_width`, `min_height`, `max_width`, `max_height`: Integer (pixels) or Percentage String (`"50%"`). Defines size constraints. Maps to corresponding KRB properties.
-    *   `layout`: Layout mode hints for children (e.g., `row`, `column`, `center`, `grow`, `wrap`, `absolute`). The compiler parses these hints to compute and set the 1-byte `Layout` field in the KRB Element Header. The corresponding `PROP_ID_LAYOUTFLAGS` (0x1A) identifier is generally not written as a separate property entry in the KRB file, as the layout information is directly encoded in the Element Header.
-    *   `style`: Name of a style block to apply. Passed to KRB Element Header `Style ID` field (as style index).
-    *   `background_color`, `text_color`, `border_color`: Hex Color String (`"#RRGGBBAA"`). Compiled into standard KRB properties.
-    *   `border_width`: Integer. Compiled into `PROP_ID_BorderWidth`.
-    *   `border_radius` Integer. Compiled into `PROP_ID_BorderRadius`.
-    *   `opacity`: Float (0.0 to 1.0). Compiled into `PROP_ID_Opacity` (likely using `VAL_TYPE_PERCENTAGE`).
-    *   `text`: Text content for `Text` or `Button`. Compiled into standard KRB property (likely `PROP_ID_TEXTCONTENT`).
-    *   `image_source`: Path for `Image`. Compiled into standard KRB property (likely `PROP_ID_IMAGESOURCE`).
-    *   `onClick`, `onChange`, etc.: Event callbacks. Compiled into KRB Event entries.
-    *   `visible`: Boolean controlling element visibility. Compiled into standard KRB property (likely `PROP_ID_VISIBILITY`).
-    *   *(Many others corresponding to KRB `PROP_ID_*`)*
+    *   **Layout & Positioning:**
+        *   `id`: String identifier for referencing the element. Passed to KRB Element Header `ID` field (as string index).
+        *   `pos_x`, `pos_y`: Integer coordinates. Passed to KRB Element Header.
+        *   `width`, `height`: Integer (pixels) or Percentage String (`"50%"`). Defines size constraints. Maps to KRB `PROP_ID_MaxWidth`/`MaxHeight`. Final size often influenced by runtime layout.
+        *   `min_width`, `min_height`, `max_width`, `max_height`: Integer (pixels) or Percentage String (`"50%"`). Defines size constraints. Maps to corresponding KRB properties.
+        *   `layout`: Layout mode hints for children (e.g., `row`, `column`, `center`, `grow`, `wrap`, `absolute`). The compiler parses these hints to compute and set the 1-byte `Layout` field in the KRB Element Header.
+        *   `gap`: Integer spacing between child elements in flow layouts. Maps to KRB `PROP_ID_Gap`.
+        *   `padding`: Integer or EdgeInsets for internal spacing. Maps to KRB `PROP_ID_Padding`.
+        *   `margin`: Integer or EdgeInsets for external spacing. Maps to KRB `PROP_ID_Margin`.
 
+    *   **Visual Styling:**
+        *   `style`: Name of a style block to apply. Passed to KRB Element Header `Style ID` field (as style index).
+        *   `background_color`: Hex Color String (`"#RRGGBBAA"`). Compiled into KRB `PROP_ID_BackgroundColor`.
+        *   `text_color`: Hex Color String for text content. Compiled into KRB `PROP_ID_ForegroundColor`.
+        *   `border_color`: Hex Color String for element borders. Compiled into KRB `PROP_ID_BorderColor`.
+        *   `border_width`: Integer for border thickness. Compiled into KRB `PROP_ID_BorderWidth`.
+        *   `border_radius`: Integer for rounded corners. Compiled into KRB `PROP_ID_BorderRadius`.
+        *   `opacity`: Float (0.0 to 1.0) for element transparency. Compiled into KRB `PROP_ID_Opacity`.
+        *   `visibility`: Boolean controlling element visibility (`true`/`false`). Compiled into KRB `PROP_ID_Visibility`.
+        *   `z_index`: Integer for layering order. Compiled into KRB `PROP_ID_ZIndex`.
+
+    *   **Text Properties:**
+        *   `text`: Text content for `Text` or `Button` elements. Compiled into KRB `PROP_ID_TextContent`.
+        *   `font_size`: Integer for text size in pixels. Compiled into KRB `PROP_ID_FontSize`.
+        *   `font_weight`: Enum (`normal`, `bold`, `light`, `heavy`). Compiled into KRB `PROP_ID_FontWeight`.
+        *   `text_alignment`: Enum (`start`, `center`, `end`, `justify`). Compiled into KRB `PROP_ID_TextAlignment`.
+
+    *   **Media Properties:**
+        *   `image_source`: Resource path for `Image` elements. Compiled into KRB `PROP_ID_ImageSource`.
+
+    *   **Interactive Properties:**
+        *   `cursor`: Controls mouse cursor appearance when hovering over element.
+            *   Values: `"default"`, `"pointer"`, `"text"`, `"crosshair"`, `"move"`, `"resize_ns"`, `"resize_ew"`, `"resize_nesw"`, `"resize_nwse"`, `"wait"`, `"help"`, `"not_allowed"`
+            *   Only applies during `:hover` state or can be set as base property for always-on cursor
+        *   `disabled`: Boolean controlling whether element accepts interaction (`true`/`false`).
+
+    *   **Event Handlers:**
+        *   `onClick`, `onChange`, `onFocus`, `onBlur`, `onHover`, `onPress`, `onRelease`: Event callbacks. Compiled into KRB Event entries.
+        *   Values are strings referencing runtime functions (`"handleButtonClick"`).
+
+    *   **App-Specific Properties:** (Only valid on `App` elements)
+        *   `window_width`, `window_height`: Integer dimensions for application window.
+        *   `window_title`: String for application title bar.
+        *   `resizable`: Boolean controlling window resize capability.
+        *   `keep_aspect`: Boolean for maintaining aspect ratio during resize.
+        *   `scale_factor`: Float for UI scaling (e.g., `1.0`, `1.5`, `2.0`).
+        *   `icon`: Resource path for application icon.
+        *   `version`: String for application version.
+        *   `author`: String for application author/developer.
+
+*   **Property Inheritance:** Certain properties automatically inherit from parent elements:
+    *   `text_color` - Text color cascades to child text elements
+    *   `font_size` - Font size cascades to child text elements  
+    *   `font_weight` - Font weight cascades to child text elements
+    *   `text_alignment` - Text alignment cascades to child text elements
+    *   Non-inheritable properties: `background_color`, `border_*`, `width`, `height`, `position`, `layout`
+
+*   **Property Validation:** The compiler validates:
+    *   Property names are recognized for the target element type
+    *   Values match expected types (colors are valid hex, numbers are in valid ranges)
+    *   Required properties are present (e.g., `text` for `Text` elements)
+    *   Pseudo-selector properties are valid for the element's interactive capabilities
+    
 ## 6. Styles (`style`)
 
 Reusable blocks of properties that can be applied to elements. Styles enhance modularity and consistency.
