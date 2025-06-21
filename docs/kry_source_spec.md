@@ -1,8 +1,14 @@
-# Kryon Source Language Specification (.kry) v1.1
+## Kryon Source Language Specification (.kry) v1.2
+
+## Change Log
+*   **v1.2**: Added comprehensive script integration support via `@script` blocks for embedding Lua, JavaScript, Python, and Wren scripting languages. Introduced pseudo-selector syntax for state-based styling (`&:hover`, `&:active`, `&:focus`, `&:disabled`, `&:checked`) enabling interactive element appearance changes. Added `cursor` property for controlling mouse cursor appearance on interactive elements. Enhanced property validation for pseudo-selectors and interactive capabilities. Updated KRB mapping documentation for state-based properties and script compilation targets. Expanded Standard Properties section with Interactive Properties subsection.
+*   **v1.1**: Enhanced component system with improved `Define` syntax and runtime instantiation strategy. Added detailed KRB mapping for component-specific properties and custom property handling. Expanded Standard Component Library with `TabBar` widget specification. Clarified component template structure and instance children handling. Improved property inheritance documentation and pseudo-selector foundation.
+*   **v1.0**: Initial stable release. Established core element syntax (`App`, `Container`, `Text`, `Image`, `Button`, `Input`). Defined property system with standard properties, styles with inheritance via `extends`, and file inclusion via `@include`. Introduced `@variables` for compile-time constants. Added component definition system via `Define` blocks with `Properties` declarations. Established event handling syntax and KRB compilation targets.
 
 ## 1. Introduction
 
-The Kryon Source Language (`.kry`) is a human-readable, text-based language designed for defining user interfaces. It prioritizes simplicity and expressiveness, allowing developers to describe UI structure, styling, and basic interactions. `.kry` files are processed by a Kryon Compiler (e.g., `kryonc`) to produce the compact Kryon Binary Format (`.krb`) for deployment on target systems. The runtime environment then interprets the `.krb` file to render the UI and handle component-specific logic.
+The Kryon Source Language (`.kry`) is a human-readable, text-based language designed for defining user interfaces. It prioritizes simplicity and expressiveness, allowing developers to describe UI structure, styling, basic interactions, and dynamic behavior through embedded scripting. `.kry` files are processed by a Kryon Compiler (e.g., `kryonc`) to produce the compact Kryon Binary Format (`.krb`) for deployment on target systems. The runtime environment then interprets the `.krb` file to render the UI, handle component-specific logic, and execute embedded scripts.
+
 
 ## 2. Design Goals
 
@@ -144,37 +150,37 @@ Properties modify the appearance or behavior of an element. They are specified w
         *   Whitespace around the colon `:` and semicolon `;` is flexible but recommended for readability.
     
     *   **Pseudo-selectors:** Modifiers that apply properties conditionally based on element state. Use CSS-like syntax with `&:` prefix.
-        ```kry
-        Button {
-            background_color: "#404080FF"
-            border_color: "#0099FFFF"
-            text: "Click Me"
-            
-            &:hover {
-                background_color: "#5050A0FF"
-                border_color: "#00CCFFFF"
-                cursor: "pointer"
-            }
-            
-            &:active {
-                background_color: "#303060FF"
-                border_color: "#0066CCFF"
-            }
-            
-            &:focus {
-                border_color: "#FFFF00FF"
-                border_width: 2
-            }
-            
-            &:disabled {
-                background_color: "#808080FF"
-                text_color: "#CCCCCCFF"
-                cursor: "default"
-            }
+    ```kry
+    Button {
+        background_color: "#404080FF"
+        border_color: "#0099FFFF"
+        text: "Click Me"
+        
+        &:hover {
+            background_color: "#5050A0FF"
+            border_color: "#00CCFFFF"
+            cursor: "pointer"
         }
-        ```
+        
+        &:active {
+            background_color: "#303060FF"
+            border_color: "#0066CCFF"
+        }
+        
+        &:focus {
+            border_color: "#FFFF00FF"
+            border_width: 2
+        }
+        
+        &:disabled {
+            background_color: "#808080FF"
+            text_color: "#CCCCCCFF"
+            cursor: "default"
+        }
+    }
+    ```
 
-*   **Pseudo-selector Details:**
+    *   **Pseudo-selector Details:**
     *   **`:hover`** - Applied when the mouse cursor is over the element
     *   **`:active`** - Applied when the element is being pressed/clicked down
     *   **`:focus`** - Applied when the element has keyboard focus (for inputs, buttons)
@@ -239,10 +245,10 @@ Properties modify the appearance or behavior of an element. They are specified w
         *   `image_source`: Resource path for `Image` elements. Compiled into KRB `PROP_ID_ImageSource`.
 
     *   **Interactive Properties:**
-        *   `cursor`: Controls mouse cursor appearance when hovering over element.
-            *   Values: `"default"`, `"pointer"`, `"text"`, `"crosshair"`, `"move"`, `"resize_ns"`, `"resize_ew"`, `"resize_nesw"`, `"resize_nwse"`, `"wait"`, `"help"`, `"not_allowed"`
-            *   Only applies during `:hover` state or can be set as base property for always-on cursor
-        *   `disabled`: Boolean controlling whether element accepts interaction (`true`/`false`).
+    *   `cursor`: Controls mouse cursor appearance when hovering over element.
+        *   Values: `"default"`, `"pointer"`, `"text"`, `"crosshair"`, `"move"`, `"resize_ns"`, `"resize_ew"`, `"resize_nesw"`, `"resize_nwse"`, `"wait"`, `"help"`, `"not_allowed"`
+        *   Only applies during `:hover` state or can be set as base property for always-on cursor
+    *   `disabled`: Boolean controlling whether element accepts interaction (`true`/`false`).
 
     *   **Event Handlers:**
         *   `onClick`, `onChange`, `onFocus`, `onBlur`, `onHover`, `onPress`, `onRelease`: Event callbacks. Compiled into KRB Event entries.
@@ -691,3 +697,371 @@ A `TabBar` component is typically used for navigation, often placed at the top o
         *   The `TabBar`'s root `Container` then lays out its own children (the `Button`s) according to its *own* `Layout` byte (derived from `bar_style`'s `layout` property, e.g., `row center`).
 
 **(Add definitions for other standard widgets like `Card`, `Dialog`, `Checkbox`, `Slider`, etc. following a similar pattern of explaining declared properties, KRB mapping, and runtime expectations for custom properties.)**
+
+
+## 12. Script Integration (`@script`)
+
+Kryon supports embedding scripting languages for dynamic behavior, event handling, and runtime logic. Scripts are compiled into the KRB format and executed by the runtime environment.
+### 12.1. Script Block Syntax
+
+Scripts can be defined in several ways within `.kry` files, with intelligent defaults based on how they're defined:
+
+*   **Inline Scripts (Default: Embedded):**
+    ```kry
+    @script "lua" {
+        function handleButtonClick(elementId)
+            print("Button clicked: " .. elementId)
+            kryon.getElementById("status_text").text = "Button was pressed!"
+        end
+    }
+    ```
+
+*   **External File Scripts (Default: External):**
+    ```kry
+    @script "lua" from "scripts/app_logic.lua"
+    @script "javascript" from "scripts/validation.js"
+    ```
+
+*   **Named Script Blocks:**
+    ```kry
+    @script "lua" name "button_handlers" {
+        function handleClick(elementId)
+            kryon.showMessage("Clicked: " .. elementId)
+        end
+    }
+    ```
+
+*   **Mode Override - Force External for Inline Scripts:**
+    ```kry
+    @script "lua" mode="external" {
+        function processLargeData()
+            -- This will be written to an external file during compilation
+        end
+    }
+    
+    @script "lua" mode="external" name="heavy_processing" {
+        function complexCalculation()
+            -- Large script that should be external for lazy loading
+        end
+    }
+    ```
+
+*   **Mode Override - Force Embed for External Scripts:**
+    ```kry
+    @script "lua" from "scripts/small_utils.lua" mode="embed"
+    ```
+
+*   **Advanced Mode Control:**
+    ```kry
+    @script "lua" mode="auto" threshold="1024" {
+        -- Compiler decides based on size: embed if < 1024 bytes, external if larger
+    }
+    
+    @script "lua" mode="external" path="generated/custom_handlers.lua" {
+        -- External script with custom output path
+    }
+    
+    @script "lua" mode="external" minify="true" name="optimized_script" {
+        -- External script with minification enabled
+    }
+    ```
+
+### Default Behavior Rules:
+- **Inline scripts** (`@script "lang" { ... }`) default to **embedded** in the KRB file
+- **External file scripts** (`@script "lang" from "file"`) default to **external** references
+- **Override behavior** using `mode="embed"` or `mode="external"` attributes
+- **Auto mode** (`mode="auto"`) lets the compiler decide based on script size and complexity
+
+### Supported Mode Attributes:
+- `mode="embed"` - Force script to be embedded in KRB file
+- `mode="external"` - Force script to be written/referenced as external file
+- `mode="auto"` - Compiler decides based on size (use with `threshold` attribute)
+- `path="custom/path.lua"` - Custom output path for external scripts
+- `minify="true"` - Enable minification for external scripts
+- `threshold="1024"` - Size threshold in bytes for auto mode
+
+### 12.2. Supported Languages
+
+| Language | File Extension | Runtime Engine | Memory Usage | Performance | Best For |
+|----------|---------------|----------------|--------------|-------------|----------|
+| `lua` | `.lua` | Lua 5.4 | Very Low (~200KB) | High | General scripting, game logic |
+| `javascript` | `.js` | QuickJS | Low (~700KB) | Good | Web developers, complex UI logic |
+| `python` | `.py` | MicroPython | Medium (~1.5MB) | Medium | Data processing, prototyping |
+| `wren` | `.wren` | Wren VM | Very Low (~150KB) | High | Embedded systems, performance-critical |
+
+### 12.3. Script Compilation and KRB Integration
+
+Scripts are compiled into the KRB format as follows:
+
+#### File Header Extension
+```
+Script Count (2 bytes): Number of script blocks
+Script Offset (4 bytes): Byte offset to script section
+```
+
+#### New Flag
+```
+FLAG_HAS_SCRIPTS (Bit 8): Set if file contains script blocks
+```
+
+#### Script Table Structure
+Located at `Script Offset`, contains `Script Count` entries:
+
+| Offset | Size | Field | Description | Example |
+|--------|------|-------|-------------|---------|
+| 0 | 1 | Language ID | Script language identifier | `0x01` (Lua) |
+| 1 | 1 | Name Index | String table index for script name (0 if unnamed) | `0x05` ("button_handlers") |
+| 2 | 1 | Entry Point Count | Number of exported functions | `0x02` (2 functions) |
+| 3 | 2 | Code Size | Size of script code in bytes | `0x1A4 0x00` (420 bytes) |
+| 5 | Variable | Entry Points | Function name indices for callbacks | See below |
+| Next | Variable | Code Data | The actual script source or bytecode | Script content |
+
+**Entry Point Structure:**
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | Function Name Index | String table index for function name |
+
+**Language IDs:**
+- `0x01`: Lua
+- `0x02`: JavaScript (QuickJS)
+- `0x03`: Python (MicroPython)
+- `0x04`: Wren
+- `0x05`-`0xFF`: Reserved/Custom
+
+### 12.4. Event Handler Integration
+
+Event handlers reference script functions through the string table:
+
+```kry
+Button {
+   text: "Save Data"
+   onClick: "saveUserData"  # References function in compiled scripts
+   onHover: "showTooltip"
+}
+```
+
+The compiler:
+1. Resolves function names to string table indices
+2. Creates KRB Event entries pointing to these indices
+3. Runtime looks up functions in loaded script contexts
+
+### 12.5. Runtime API
+
+Scripts have access to a standard `kryon` API object:
+
+```lua
+-- Element manipulation
+local element = kryon.getElementById("my_button")
+element.text = "New Text"
+element.background_color = "#FF0000FF"
+
+-- Event handling
+kryon.addEventListener("my_input", "change", function(event)
+   print("Input changed: " .. event.value)
+end)
+
+-- Timers and scheduling
+kryon.setTimer(1000, function()
+   updateClock()
+end)
+
+-- State management
+kryon.setState("user_score", 100)
+local score = kryon.getState("user_score")
+
+-- Navigation
+kryon.navigateTo("settings_page")
+
+-- System integration
+kryon.showMessage("Operation completed")
+kryon.vibrate(200)  -- Mobile platforms
+```
+
+### 12.6. Variable Integration
+
+Scripts can access KRY variables through the runtime:
+
+```kry
+@variables {
+   api_endpoint: "https://api.example.com"
+   max_retries: 3
+}
+
+@script "lua" {
+   function fetchData()
+       local endpoint = kryon.getVariable("api_endpoint")
+       local retries = kryon.getVariable("max_retries")
+       -- Use variables in script logic
+   end
+}
+```
+
+### 12.7. Component Script Integration
+
+Scripts can be associated with component definitions:
+
+```kry
+Define CustomButton {
+   Properties {
+       action: String = "default"
+       label: String = "Click"
+   }
+   
+   @script "lua" {
+       function handleCustomClick()
+           local action = kryon.getProperty(self.id, "action")
+           if action == "save" then
+               saveData()
+           elseif action == "cancel" then
+               cancelOperation()
+           end
+       end
+   }
+   
+   Button {
+       text: "$label"
+       onClick: "handleCustomClick"
+   }
+}
+```
+
+### 12.8. Script Compilation Modes
+
+The Kryon compiler provides flexible control over how scripts are compiled and deployed:
+
+#### Default Behavior
+- **Inline scripts** are embedded directly in the KRB file for optimal performance
+- **External file scripts** remain external with references stored in the KRB file
+- This provides intuitive behavior while allowing optimization for different deployment scenarios
+
+#### Mode Attributes
+Scripts can override default behavior using mode attributes:
+
+```kry
+# Inline script forced to external (useful for large UI handlers)
+@script "lua" mode="external" name "complex_ui_logic" {
+    function handleComplexInteraction() 
+        -- Large script that benefits from lazy loading
+    end
+}
+
+# External script forced to embed (useful for critical small utilities)
+@script "lua" from "scripts/critical_utils.lua" mode="embed"
+
+# Size-based automatic decision
+@script "lua" mode="auto" threshold="2048" {
+    function adaptiveFunction()
+        -- Compiler embeds if < 2KB, external if larger
+    end
+}
+```
+
+#### Compiler Flags
+Global overrides available via command-line flags:
+
+```bash
+# Force all scripts to embed regardless of source defaults
+kryc app.kry --force-embed
+
+# Force all scripts to external regardless of source defaults  
+kryc app.kry --force-external
+
+# Set global threshold for auto mode
+kryc app.kry --auto-threshold=1500
+
+# Development mode (prefer external for hot reloading)
+kryc app.kry --dev --prefer-external
+
+# Production mode (prefer embed for performance)
+kryc app.kry --prod --prefer-embed
+```
+
+#### Build Output Structure
+External scripts are organized in the build output:
+
+```
+project/
+├── src/
+│   ├── app.kry
+│   └── scripts/
+│       └── utils.lua           # Source external script
+└── build/
+    ├── app.krb                 # Main UI binary with embedded scripts
+    ├── scripts/
+    │   ├── utils.lua           # Referenced external script
+    │   └── complex_ui_logic.lua # Generated from inline script
+    └── manifest.json           # Build manifest with script references
+```
+
+## Pseudo-Selector Verification and KRB Mapping
+
+The pseudo-selector syntax in the KRY specification is accurate and makes sense for KRB compilation. Here's how it maps:
+
+### KRB State-Based Property Compilation
+
+When pseudo-selectors are encountered, the compiler creates multiple property sets for different element states:
+
+#### Extended Element Property Structure
+
+```
+Standard Properties (base state)
+State Property Sets:
+ - Hover Properties (if &:hover defined)
+ - Active Properties (if &:active defined)  
+ - Focus Properties (if &:focus defined)
+ - Disabled Properties (if &:disabled defined)
+ - Checked Properties (if &:checked defined)
+```
+
+#### State Property Set Structure
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | State Flags | Bit flags for applicable states |
+| 1 | 1 | Property Count | Number of properties in this state |
+| 2 | Variable | Properties | Standard property entries |
+
+**State Flags:**
+- Bit 0: `STATE_HOVER` 
+- Bit 1: `STATE_ACTIVE`
+- Bit 2: `STATE_FOCUS` 
+- Bit 3: `STATE_DISABLED`
+- Bit 4: `STATE_CHECKED`
+- Bit 5-7: Reserved
+
+#### Example KRY to KRB Compilation
+
+```kry
+Button {
+   background_color: "#404080FF"  # Base state
+   text: "Click Me"
+   
+   &:hover {
+       background_color: "#5050A0FF"  # Hover state override
+       cursor: "pointer"
+   }
+   
+   &:disabled {
+       background_color: "#808080FF"  # Disabled state override
+       text_color: "#CCCCCCFF"
+   }
+}
+```
+
+**Compiled KRB Structure:**
+1. **Base Properties:** `background_color: #404080FF`, `text: "Click Me"`
+2. **Hover State Set:** `STATE_HOVER` flag, properties: `background_color: #5050A0FF`, `cursor: "pointer"`
+3. **Disabled State Set:** `STATE_DISABLED` flag, properties: `background_color: #808080FF`, `text_color: #CCCCCCFF`
+
+### Runtime State Resolution
+
+The runtime applies state-based properties by:
+
+1. Starting with base element properties
+2. Checking current element state (hover, focus, etc.)
+3. Overlaying matching state property sets in precedence order
+4. Using the final resolved properties for rendering
+
+This approach ensures efficient storage while providing flexible state-based styling that integrates seamlessly with Kryon's compact binary format and property inheritance system.
+
+The `cursor` property is correctly limited to hover states or as a base property, since cursor changes are only meaningful during mouse interaction or as a persistent element characteristic.
